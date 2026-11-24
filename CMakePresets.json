@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON"
+      }
+    },
+    {
+      "name": "pc-debug",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "DEV_BOARD_SANITIZE": "ON" }
+    },
+    {
+      "name": "pc-release",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "h1v1",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/h1v1.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_COMPILE_WARNING_AS_ERROR": "OFF" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "pc-debug", "configurePreset": "pc-debug" },
+    { "name": "pc-release", "configurePreset": "pc-release" },
+    { "name": "h1v1", "configurePreset": "h1v1" }
+  ],
+  "testPresets": [
+    { "name": "pc-debug", "configurePreset": "pc-debug", "output": { "outputOnFailure": true } },
+    { "name": "pc-release", "configurePreset": "pc-release", "output": { "outputOnFailure": true } }
+  ]
+}

@@ -1,0 +1,63 @@
+// 開發板設定。參數說明見 dev_board_spec.md §11。
+// 「暫定」的數字等 Gazebo 實驗或各組回答後再改（roadmap.md M4、discussion.md）。
+{
+  "network": {
+    "depth_host": "127.0.0.1",   // 暫定，A5
+    "depth_port": 15000,         // 暫定，A5
+    "mavlink_port": 14540,
+    "server_host": "127.0.0.1",  // 暫定，S1
+    "server_port": 15001,        // 暫定，S1：開發板 → server
+    "command_port": 15002        // 暫定，S1：server → 開發板
+  },
+  "camera": {
+    // 暫定，G4：hfov 87°、640×480。depth 是 rgb 乘 1/4
+    "depth": { "width": 160, "height": 120, "fx": 84.3024, "fy": 84.3024, "cx": 80.0, "cy": 60.0 },
+    "rgb": { "width": 640, "height": 480, "fx": 337.2096, "fy": 337.2096, "cx": 320.0, "cy": 240.0 },
+    "near_m": 0.1,
+    "far_m": 20.0,
+    "t_cam": [0.0, 0.0, 0.0]     // 機身 FRD，暫定，G2b。Gazebo 是 FLU，y、z 要變號
+  },
+  "grid": {
+    "cell_size_m": 0.25
+  },
+  "zone": {
+    "width_m": 1.0,              // 暫定，A1；啟動時進位到 2s 的倍數
+    "ring_width_m": 0.5,         // 暫定，§14 的基準；啟動時進位到 s 的倍數
+    "box_short_side_m": 0.4      // 暫定，A1
+  },
+  "evaluate": {
+    "hole_depth_m": 0.4,
+    "max_slope_deg": 10.0,       // 暫定
+    "max_roughness_m": 0.1,      // 暫定，§12 小模擬用的值
+    "depth_noise_m": 0.0,        // 暫定，G7；要量降採樣後的深度
+    "max_zone_invalid_ratio": 0.1,
+    "max_cell_invalid_ratio": 0.5,
+    "min_points_per_cell": 3,
+    "low_percentile": 0.2,
+    "refit_rounds": 2
+  },
+  "limits": {
+    "min_distance_m": 0.3,
+    "max_tilt_deg": 5.0          // 待調
+  },
+  "suggest": {
+    "neighbor_rings": 1,
+    "max_distance_m": 8.0,
+    "exclude_radius_m": 2.0,     // 暫定
+    "exclude_expire_ms": 300000  // 暫定
+  },
+  "drop_check": {
+    "drop_max_height_m": 5.0,    // 暫定
+    "max_speed_mps": 0.3,        // 暫定
+    "frames": 10,
+    "min_pass": 8,
+    "max_wait_ms": 1500
+  },
+  "timing": {
+    "data_max_age_ms": 500,
+    "px4_buffer_ms": 1000,
+    "interpolation_max_ms": 100,
+    "tcp_recv_timeout_ms": 3000,
+    "tcp_connect_timeout_ms": 1000
+  }
+}

@@ -220,6 +220,16 @@ TEST_CASE("contradicting fields are rejected") {
         j["drop_check"]["min_pass"] = 11;
         CHECK(mentions(error_of(j), "drop_check.min_pass"));
     }
+    SUBCASE("zone and ring not visible from the drop limit") {
+        j["zone"]["landing_offset_m"] = 3.0;  // (0.5 + 3.25) / tan(vfov / 2) = 5.27 m > 5 m
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
+    }
+    SUBCASE("zone and ring not visible along the narrower axis") {
+        j["camera"]["rgb"]["fy"] = 674.4192;  // vfov 約 39°，5 m 高只看得到 ±1.78 m
+        j["camera"]["depth"]["fy"] = 168.6048;
+        j["zone"]["landing_offset_m"] = 1.5;  // 0.5 + 1.75 = 2.25 m
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
+    }
     SUBCASE("far not beyond the suggest limit") {
         j["camera"]["far_m"] = 8.0;
         CHECK(mentions(error_of(j), "camera.far_m"));
@@ -270,6 +280,12 @@ TEST_CASE("contradicting fields are rejected") {
         j["network"]["command_port"] = 14540;
         CHECK(mentions(error_of(j), "network.command_port"));
     }
+}
+
+TEST_CASE("the widest ring still visible from the drop limit is accepted") {
+    json j = valid();
+    j["zone"]["landing_offset_m"] = 2.75;  // (0.5 + 3.0) / tan(vfov / 2) = 4.92 m < 5 m
+    CHECK(error_of(j) == "");
 }
 
 TEST_CASE("depth may be 320x240 (spec section 10)") {

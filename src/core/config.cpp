@@ -280,6 +280,18 @@ void check_distances(const Config& c) {
     }
 }
 
+// 最高的投放高度水平拍時也放不下 Z＋外圈的話，每次確認都會是 too_low 或 too_high。
+void check_zone_fits_view(const Config& c) {
+    const double half_zone = c.zone.width_m / 2 + c.zone.ring_width_m;
+    const double half_view =
+        c.drop_check.drop_max_height_m * c.camera.depth.height / (2 * c.camera.depth.fy);
+    if (half_zone > half_view) {
+        fail("zone.landing_offset_m", "zone.width_m / 2 plus the ring is " + to_text(half_zone) +
+                 " m, but only " + to_text(half_view) +
+                 " m is visible from drop_check.drop_max_height_m");
+    }
+}
+
 }  // namespace
 
 int ceil_cells(double length, double unit) {
@@ -310,6 +322,7 @@ Config parse_config(const std::string& text) {
     s.finish();
     check_depth_intrinsics(c.camera.depth, c.camera.rgb);
     check_distances(c);
+    check_zone_fits_view(c);
     return c;
 }
 

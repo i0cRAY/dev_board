@@ -56,6 +56,8 @@ qemu-aarch64-static -L ~/toolchains/aarch64-ca73-linux-gnueabihf-10.4.0/aarch64-
 | ---- | ---- |
 | `config/dev_board.json` | §11 參數、連線、相機內參 |
 | `src/core/` | 不碰網路的函式庫 |
+| `src/downsample/` | 深度降採樣，橋接程式和合成深度共用，不依賴其他程式 |
+| `src/synthetic/` | 合成深度：不用 Gazebo 產生深度幀，測試和回放程式用 |
 | `src/dev_board/` | 開發板主程式 |
 | `tests/` | 單元測試 |
 | `third_party/` | 第三方函式庫原始碼 |

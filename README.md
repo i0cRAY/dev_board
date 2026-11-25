@@ -1,4 +1,4 @@
-# XR 救災無人機：開發板（H1V1）
+# XR 救災無人機：開發板
 
 規格 [dev_board_spec.md](dev_board_spec.md)、進度 [roadmap.md](roadmap.md)、跨組問題 [discussion.md](discussion.md)。
 

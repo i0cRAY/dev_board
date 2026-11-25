@@ -2,7 +2,7 @@
 
 > 合併自 `dev_board.md` 與 `ground_safety_algorithm.md`（2026-11-22～23 討論）。兩份衝突的地方以演算法討論為準。
 >
-> - **已定**：使用者已決定。
+> - **已定**：使用者（開發板）已決定，**不代表其他組同意**。跨組確定的只有兩項：開發板和 server 用 UDP＋JSON；投放由 PX4 控制，開發板只給建議。其他會影響別組的都是開發板的提案，待確認（§13、`discussion.md`）。
 > - **提議**：討論過、還沒確認。
 > - **待定**：數值要用 Gazebo 量，或要跟其他組對齊。
 
@@ -60,7 +60,7 @@
 
 ### 深度影像的 TCP 格式（PC 橋接程式 → 開發板）
 
-- 橋接程式由開發板這邊寫（已定，2026-11-24），跟開發板程式共用降採樣函式；在 Gazebo 組的電腦上編譯和測
+- 橋接程式由開發板這邊寫（提案，待 Gazebo 組確認），跟開發板程式共用降採樣函式；在 Gazebo 組的電腦上編譯和測
 - 用 TCP 的原因：PC 和 H1V1 在同一個區網，掉包很少，TCP 幾乎不用重送；不用自己拆包、拼幀、處理缺包，程式比較簡單
 - 每幀降採樣成 160×120、uint16、單位公釐（0 = 無效深度），一幀 38,400 bytes（30 FPS 約 9 Mbps，Wi-Fi 也跑得動）
 - 連線：PC 橋接程式當 TCP server（listen），開發板主動連過去；斷線時開發板每 1 秒重連一次，斷線期間 heartbeat 回報 `no_depth`
@@ -99,7 +99,7 @@
 | PX4            | MAVLink over UDP，連 SITL 的 14540 port；沒有 SITL 時由回放程式送    | MAVLink over UDP，連 SITL 的 14540 port（跨機器，見下方）                 |
 | MAVLink 函式庫 | c_library_v2（只有標頭檔，交叉編譯最省事）                         | 同左                                                                      |
 
-- **PX4 → 開發板：直接用 MAVLink，不經過 C++ server 轉送（已定）**
+- **PX4 → 開發板：直接用 MAVLink，不經過 C++ server 轉送（提案，待 PX4、server 確認）**
   - 開發板拿到 PX4 原始的姿態和時間戳，才能跟深度幀準確對齊
   - server 不用多寫轉送功能；server 掛掉時開發板仍能取得姿態與位置
 - Port 分配：開發板用 14540（offboard/API）；server 或 QGC 如需無人機狀態，自己連 14550（地面站），不從開發板轉送
@@ -305,7 +305,7 @@ Z 中間有一個高 h 的台階（小於 D，沒被當成坑）時，擬合出�
 | `no_px4`        | 沒有 PX4 資料或已過期（§5）             |
 
 - 只當警告，不鎖投放按鈕（PX4 控制投放）
-- **`ok` 的有效期**（已定，數值暫定）：開發板只回報檢查當下的結果；由 XR 在水平移動超過 0.5 m 或過了 10 秒時清掉
+- **`ok` 的有效期**（提案，待 server／XR 確認，數值暫定）：開發板只回報檢查當下的結果；由 XR 在水平移動超過 0.5 m 或過了 10 秒時清掉
 - **自動排除**（已定）：`reason` 是 `slope`、`hole`、`rough` 時，把這次 Z 中心的世界座標加入排除清單（見 §8.8）
   - `invalid_depth`、`too_high`、`too_low`、`tilted`、`moving`、`no_depth`、`no_px4` 不排除：跟當下的飛行狀態有關，換高度或穩住後可能就合格
 - 舊版想法「跟觸發推薦時的深度比較，偵測有沒有新物體（例如人）進入」：Z＋外圈內**站著或坐著**的人多半會判不合格（規則 C、`slope` 或 `rough`），躺在外圈的人抓不到（§12）。還要不要另外比較：待定
@@ -379,7 +379,7 @@ Z 中間有一個高 h 的台階（小於 D，沒被當成坑）時，擬合出�
 - `north_m`、`east_m` 是箱子要落下的點，**也是機身中心要飛到的位置**，不用另外補償，機頭朝哪個方向都一樣
 - 投影到像素：先減掉 `o.x`、`o.y` 回到相機原點，再反轉回相機座標：`p_b = Rᵀ · (x − o.x, y − o.y, depth_m)`，`(x_c, y_c, z_c) = (p_b.y, −p_b.x, p_b.z)`，再用 RGB 內參投影
 
-- **XR 疊圖要重新投影**（已定，2026-11-24）：無人機一動，`pixel_u`、`pixel_v` 就不準了。用**現在**的無人機位置 `P`、姿態和推薦點 `T = (north_m, east_m, down_m)`：
+- **XR 疊圖要重新投影**（提案，待 server／XR 確認）：無人機一動，`pixel_u`、`pixel_v` 就不準了。用**現在**的無人機位置 `P`、姿態和推薦點 `T = (north_m, east_m, down_m)`：
   - `p_b = (Rz(yaw) · Ry(pitch) · Rx(roll))ᵀ · (T − P) − t_cam`
   - `(x_c, y_c, z_c) = (p_b.y, −p_b.x, p_b.z)`，`z_c ≤ 0` 就不畫；`u = fx·x_c / z_c + cx`，`v = fy·y_c / z_c + cy`（RGB 內參）
   - 紅框邊長約 `fx·Zw / z_c` 像素，**不要用 `depth_m`**（那是計算當時的距離）
@@ -424,7 +424,9 @@ Z 中間有一個高 h 的台階（小於 D，沒被當成坑）時，擬合出�
 
 ## 9. Output（送給 C++ server）
 
-### 9.1 傳輸方式：UDP＋JSON（已定）
+### 9.1 傳輸方式：UDP＋JSON（跨組已確定）
+
+> 確定的只有「用 UDP＋JSON」。§9 其他內容（欄位、重送規則、逾時、失效行為）都是開發板的提案，**還沒跟 server／XR 討論**（§13）。
 
 - 每個 UDP datagram 放一則 JSON 訊息（UTF-8），大小 < 1200 bytes，避免 IP 分片
 - 共同外層欄位：
@@ -459,20 +461,20 @@ Z 中間有一個高 h 的台階（小於 D，沒被當成坑）時，擬合出�
 
 ### 9.2 訊息列表
 
-> 標 ★ 的欄位是 2026-11-22 演算法討論後的新版本，**還沒跟 server / XR 對齊**（見 §13）。
+> 整份都是開發板的提案，**還沒跟 server／XR 討論**（見 §13）。
 
 
 | 方向         | `type`            | `payload` 欄位                                                                                                                                               | 頻率               |
 | ------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
-| server → 板 | `suggest_request` | `request_id`, ★ `exclude_last`（bool，可省略，預設 `false`）                                                                                                                                                 | 按鈕               |
+| server → 板 | `suggest_request` | `request_id`, `exclude_last`（bool，可省略，預設 `false`）                                                                                                                                                 | 按鈕               |
 | server → 板 | `check_request`   | `request_id`                                                                                                                                                 | 按鈕               |
 | 雙向         | `ack`             | `ack_type`, `request_id`                                                                                                                                     | 收到指令或結果時   |
-| 板 → server | `height`          | ★ `agl`                                                                                                                                           | ≥ 10 Hz           |
-| 板 → server | `drop_suggestion` | `request_id`, ★ `request_session_id`, `frame_timestamp`, `ok`, `pixel_u`, `pixel_v`, `forward_m`, `right_m`, ★ `north_m`, `east_m`, `down_m`, `depth_m`, `height_diff_m`, `reason`, ★ `counts` | 觸發後 ≤ 1 s 回覆 |
-| 板 → server | `drop_check`      | `request_id`, ★ `request_session_id`, `frame_timestamp`, `ok`, ★ `reason`（`slope` / `hole` / `rough` / `invalid_depth` / `too_high` / `too_low` / `tilted` / `moving` / `no_depth` / `no_px4`）, ★ `counts`                    | 觸發後約 1.5 s 內回覆 |
-| 板 → server | `heartbeat`       | ★ `state`（`ok` / `no_depth` / `no_px4`）, `fps`                                                                                              | 1 Hz               |
+| 板 → server | `height`          | `agl`                                                                                                                                           | ≥ 10 Hz           |
+| 板 → server | `drop_suggestion` | `request_id`, `request_session_id`, `frame_timestamp`, `ok`, `pixel_u`, `pixel_v`, `forward_m`, `right_m`, `north_m`, `east_m`, `down_m`, `depth_m`, `height_diff_m`, `reason`, `counts` | 觸發後 ≤ 1 s 回覆 |
+| 板 → server | `drop_check`      | `request_id`, `request_session_id`, `frame_timestamp`, `ok`, `reason`（`slope` / `hole` / `rough` / `invalid_depth` / `too_high` / `too_low` / `tilted` / `moving` / `no_depth` / `no_px4`）, `counts`                    | 觸發後約 1.5 s 內回覆 |
+| 板 → server | `heartbeat`       | `state`（`ok` / `no_depth` / `no_px4`）, `fps`                                                                                              | 1 Hz               |
 
-- `drop_suggestion` 的 `reason`：★ `no_depth` / `no_px4` / `tilted` / `too_low` / `too_high` / `invalid_depth` / `terrain` / `excluded`
+- `drop_suggestion` 的 `reason`：`no_depth` / `no_px4` / `tilted` / `too_low` / `too_high` / `invalid_depth` / `terrain` / `excluded`
 - 座標系：`forward_m`、`right_m` 以機身中心正下方為原點、已補償姿態，水平面上的位移（跟 §3 同一個原點）
 - 像素座標：`pixel_u`、`pixel_v` 是 RGB 畫面的像素。Gazebo 的 RGB 相機和深度相機必須同位置、同 FOV、同解析度，座標才能直接用
 - `drop_suggestion` 找到時（`ok=true`）：`reason` 為 `null`，不送 `counts`
@@ -673,29 +675,25 @@ Z 中間有一個高 h 的台階（小於 D，沒被當成坑）時，擬合出�
 
 ## 13. 跨組待確認
 
-- **C++ server / XR**（已定 UDP＋JSON）
+- **C++ server / XR**（跨組只確定用 UDP＋JSON）
   - port 數字、ack 與重送規則、heartbeat 逾時的處理
-  - 訊息變更（§9.2 標 ★ 的部分）：
-    - `height`：改成只帶 `agl`，量不到時為 `null`（原本是 `height_m`, `source`, `valid`）
-    - `suggest_request`：加 `exclude_last`；XR 要有「推薦」和「換一個」兩個按鈕
-    - `drop_suggestion`：加 `north_m`、`east_m`、`down_m`、`depth_m`、`height_diff_m`、`counts`
-    - 外層加 `session_id`；`seq` 去舊只用在 `height`、`heartbeat`（§9.1）
-    - `drop_check`：`reasons[]` 改成單一 `reason`，加 `counts`；值拿掉 `obstacle`，加 `rough`、`too_low`、`moving`、`no_depth`、`no_px4`
-    - `drop_check` 約 1.5 s 內回覆；連按兩次時只回最新的 `request_id`
-    - 重送次數、等結果逾時、`request_id` 遞增、結果帶 `request_session_id`（§9.1）
-    - `heartbeat`：`state` 拿掉 `out_of_range`；`fps` 是最近 1 秒收到的深度幀數
-    - 可能是 `null` 的欄位：外層 `timestamp`、`agl`、`frame_timestamp`、`height_diff_m`（§9.2）
-    - `drop_suggestion` 的 `reason`：`no_depth` / `no_px4` / `tilted` / `too_low` / `too_high` / `invalid_depth` / `terrain` / `excluded`
+  - 整份訊息格式（§9.2）：外層欄位、每種訊息的 `payload`、`reason` 的值、哪些欄位可能是 `null`
+  - 行為（§9.1）：`seq` 和 `session_id` 的用法、重送次數、等結果逾時、`request_id` 遞增、結果帶 `request_session_id`
+  - `drop_check` 約 1.5 s 內回覆；連按兩次時只回最新的 `request_id`
+  - XR 要有「推薦」和「換一個」兩個按鈕（`exclude_last`）
+  - server 要無人機狀態時自己連 14550，不從開發板轉送（§4）
   - `hole` 的顯示文字（§7）；`ok` 由 XR 清掉（水平移動 > 0.5 m 或 10 秒，暫定）
   - server 直接用開發板給的位移和世界座標，不要自己再算；只有畫面疊圖要重新投影（§8.5）
   - 待決：誰把無人機飛到推薦點（server 用 north/east 下指令，或操作員手飛）
   - Godot 沒有內建 H.264/RTP 播放，要用 GDExtension（GStreamer/FFmpeg），或由 C++ server 解碼後再轉給 Godot；疊圖用重新投影（§8.5），RGB 串流的延遲要量
-- **PX4**（已定開發板直接用 MAVLink 連 SITL 14540）
+- **PX4**（跨組只確定投放由 PX4 控制，開發板只給建議）
+  - 開發板直接用 MAVLink 連 SITL 14540，不經過 server 轉送，可不可以（§4）
   - SITL 的 MAVLink 目標 IP 怎麼設成 H1V1（改啟動參數或用 mavlink-router，建議後者，§4）
   - `ATTITUDE`、位置訊息的串流頻率要調到 §4 表格的需求（`MAV_CMD_SET_MESSAGE_INTERVAL`）
-  - 投放高度設定在哪裡，下限見 §11（r = 0.75 m 時建議 ≥ 2.5 m）；投放由 PX4 控制，開發板只給建議
+  - 投放高度設定在哪裡，下限見 §11（r = 0.75 m 時建議 ≥ 2.5 m）
   - `time_boot_ms` 跟 sim time 同零點：原始碼已查證，實跑時再驗（§5 第 2 步）
 - **Gazebo**
+  - 橋接程式由開發板組寫，在 Gazebo 組的電腦上編譯和測，可不可以（§4）
   - 兩條資料路徑：GStreamer RGB 串流（給 server/XR）、深度 topic 原始資料（給橋接程式）
   - RGB 相機和深度相機要同位置、同 FOV、同解析度（或直接用 `rgbd_camera` 感測器）
   - 深度是 z-depth：原始碼已查證，實跑時再驗（§5 第 3 步）

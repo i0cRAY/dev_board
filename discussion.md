@@ -3,7 +3,9 @@
 > 整理日期：2026-11-24。完整規格在 [dev_board_spec.md](dev_board_spec.md)，`§` 指那份文件的章節。
 >
 > - **要回答**：請直接填在「回答」欄。
-> - **要知道**：開發板已經決定的做法，會影響你們的部分。有問題再提出來討論。
+> - **跨組已確定**：開發板和 server 用 UDP＋JSON；投放由 PX4 控制，開發板只給建議。
+> - **提案**：除了上面兩項，其他都是開發板自己先想的做法，**還沒跟任何一組討論過**。請看過以後回覆可以或要改。
+> - **要知道**：提案裡會影響你們的部分。
 > - 沒回答之前，開發板先照「開發板目前的假設／建議」做。
 
 ## 1. 最優先的 9 題
@@ -31,7 +33,7 @@
 | A2 | 搜尋時飛多高？投放時降到多高？ | 太高點數不夠，平地會被誤判成坑；太低看不到整個投放區和外圈（§10、§11） | 搜尋約 **7.5 m**（離地超過 8 m 推薦回 `too_high`）；投放 **2.5～5 m**（落地偏移 0.5 m、外圈 r = 0.75 m 時；超過 5 m 投放前確認回 `too_high`，5 m 是暫定）。投放前確認在 **3～4 m** 做比較不會漏掉小坑 | |
 | A3 | 誰把無人機飛到推薦點？server 用 `north`/`east` 下指令，還是操作員手飛？ | 決定座標要給誰用，也影響停得多準（鄰居圈數 k）（§8.4、§13） | 兩種都可以，座標就是機身中心要飛到的位置 | |
 | A4 | 驗收標準：允許多少「危險卻說可以」、「安全卻說不行」？每個測試場景的預期結果是什麼？ | §14 有場景，需要全組同意的數字 | 提議：§14 有明確預期的場景全部要過（已知限制除外）、小坑漏判 ≤ 10%、平地 7.5 m 誤擋 ≤ 5%（只算 Z＋外圈＋外圈外面一格都看得到的位置，畫面邊緣不算；雜訊 0 和 2 cm 各驗一次）。大屋頂中央預期合格（災民可能在屋頂，由操作員決定） | |
-| A5 | 跑橋接程式的 PC 和 H1V1 的 IP、TCP port 是多少？ | 要寫進設定檔（§4） | 橋接程式由**開發板組**寫（已定），在 Gazebo 組的電腦上編譯和測，需要那台電腦可以編譯。IP、port 待討論 | |
+| A5 | 跑橋接程式的 PC 和 H1V1 的 IP、TCP port 是多少？ | 要寫進設定檔（§4） | 提議橋接程式由**開發板組**寫，在 Gazebo 組的電腦上編譯和測，需要那台電腦可以編譯。IP、port 待討論 | |
 
 ## 3. C++ server／XR
 
@@ -44,21 +46,40 @@
 | S3 | RGB 串流怎麼顯示？Godot 用 GDExtension，還是 server 解碼後轉給 Godot？ | Godot 沒有內建 H.264/RTP 播放（§13） | 待 XR 決定 | |
 | S4 | 疊圖的投影由 server 還是 XR 算？紅框多大？ | 開發板給推薦點的 3D 座標（`north_m`/`east_m`/`down_m`），要算到畫面上（公式在 §8.5）。框的大小用投放區邊長和「現在」的距離算，不用 `depth_m` | 由 XR 或 server 擇一；邊長用進位後的值（例：1.2 m → 1.5 m），由設定檔給。也可以在 Godot 直接放 3D 標記 | |
 | S5 | server 的 `timestamp` 要怎麼拿到 sim time？ | 訊息的 `timestamp` 規定用 Gazebo sim time（§9.1） | 訂閱 Gazebo 的 `/clock`，或 server 這邊允許填其他時間。開發板自己沒有 sim time 時會填 `null` | |
-| S6 | 第 3 節「要知道」的訊息變更可以嗎？ | 跟之前講的不一樣 | 見下方 | |
+| S6 | 下面的訊息格式和行為可以嗎？ | 之前只確定用 UDP＋JSON，欄位、重送規則、XR 的配合都還沒討論過 | 照下面的提案 | |
+| S7 | server／XR 要無人機狀態時，自己連 PX4 的 MAVLink（14550）可以嗎？ | 開發板打算自己直接接 PX4，不轉送給 server，也不經過 server 轉送（P6） | 可以 | |
 
-### 要知道：訊息格式變更（§9）
+### 提案：訊息格式（§9）
 
-| 訊息 | 變更 |
-| ---- | ---- |
-| 所有訊息 | 外層加 `session_id`：程式每次啟動隨機產生。收到不同的 `session_id` 代表對方重啟了，要清掉記住的 `seq` 和 `request_id` |
-| 所有訊息 | `seq` 只用來去掉舊的 `height`、`heartbeat`；指令、結果、`ack` 靠 `request_id` 去重 |
-| `height` | 只帶 `agl`（公尺），量不到時是 `null`。原本的 `height_m`、`source`、`valid` 拿掉。要顯示飛行高度請直接跟 PX4 拿 |
-| `suggest_request` | 加 `exclude_last`（可省略）。XR 要有「推薦」和「換一個」兩個按鈕，「換一個」送 `true` |
-| `drop_suggestion` | 加 `north_m`、`east_m`、`down_m`、`depth_m`、`height_diff_m`、`counts`。找不到時不送位置欄位，改送 `reason` 和 `counts` |
-| `drop_suggestion` 的 `reason` | `no_depth` / `no_px4` / `tilted` / `too_low` / `too_high` / `invalid_depth` / `terrain` / `excluded` |
-| `drop_check` | `reasons[]` 改成單一 `reason`，加 `counts`。拿掉 `obstacle`，加 `rough`、`too_low`、`moving`、`no_depth`、`no_px4` |
+傳輸方式已確定是 UDP＋JSON，下面的欄位都是提案。每個 UDP datagram 放一則 JSON（UTF-8，< 1200 bytes）。範例在 [dev_board_spec.md](dev_board_spec.md) §9.3。
 
-### 要知道：行為
+每則訊息的外層：
+
+| 欄位 | 型別 | 說明 |
+| ---- | ---- | ---- |
+| `type` | string | 訊息種類 |
+| `session_id` | int | 程式每次啟動隨機產生（32-bit）。收到不同的 `session_id` 代表對方重啟了，要清掉記住的 `seq` 和 `request_id` |
+| `seq` | int | 每個發送端各自遞增，只用來丟掉舊的 `height`、`heartbeat`；指令、結果、`ack` 靠 `request_id` 去重 |
+| `timestamp` | int 或 `null` | 毫秒，Gazebo sim time |
+| `payload` | object | 內容，見下表 |
+
+| 方向 | `type` | `payload` | 時機 |
+| ---- | ------ | --------- | ---- |
+| server → 板 | `suggest_request` | `request_id`、`exclude_last`（bool，可省略，預設 `false`）。XR 要有「推薦」和「換一個」兩個按鈕，「換一個」送 `true` | 按鈕 |
+| server → 板 | `check_request` | `request_id` | 按鈕 |
+| 雙向 | `ack` | `ack_type`、`request_id` | 收到指令或結果時 |
+| 板 → server | `height` | `agl`（公尺，離地高度；量不到是 `null`）。要顯示飛行高度請直接跟 PX4 拿 | ≥ 10 Hz |
+| 板 → server | `drop_suggestion`，找到時 | `request_id`、`request_session_id`、`frame_timestamp`、`ok`（`true`）、`forward_m`、`right_m`、`north_m`、`east_m`、`down_m`、`pixel_u`、`pixel_v`、`depth_m`、`height_diff_m`、`reason`（`null`）；不送 `counts` | ≤ 1 秒 |
+| 板 → server | `drop_suggestion`，找不到時 | `request_id`、`request_session_id`、`frame_timestamp`、`ok`（`false`）、`reason`、`counts`；不送位置欄位 | ≤ 1 秒 |
+| 板 → server | `drop_check` | `request_id`、`request_session_id`、`frame_timestamp`、`ok`、`reason`（合格時 `null`）、`counts`（合格時不送） | 約 1.5 秒內 |
+| 板 → server | `heartbeat` | `state`、`fps`（最近 1 秒收到的深度幀數） | 1 Hz |
+
+- 名稱有 `_m` 的欄位都是公尺，`pixel_u`／`pixel_v` 是 RGB 畫面的像素，`frame_timestamp` 是毫秒（sim time）
+- `drop_suggestion` 的 `reason`：`no_depth` / `no_px4` / `tilted` / `too_low` / `too_high` / `invalid_depth` / `terrain` / `excluded`
+- `drop_check` 的 `reason`：`slope` / `hole` / `rough` / `invalid_depth` / `too_high` / `too_low` / `tilted` / `moving` / `no_depth` / `no_px4`
+- `heartbeat` 的 `state`：`ok` / `no_depth` / `no_px4`
+
+### 提案：行為
 
 - **回覆時間**：`drop_suggestion` ≤ 1 秒，`drop_check` 約 1.5 秒內。server 等結果的逾時要比 1.5 秒長（見下方）
 - **ack 與重送**：server 300 ms 沒收到 `ack` 就重送指令，最多 3 次；送出新的同類指令時，停止重送舊的。server 收到結果要回 `ack`，開發板 300 ms 沒收到就重送，最多 3 次
@@ -68,7 +89,7 @@
 - **可能是 `null` 的欄位**：外層的 `timestamp`（開發板還沒收到 sim time）、`agl`、`frame_timestamp`、`height_diff_m`，解析時要處理
 - **`counts`**：`drop_suggestion` 固定列四個原因（沒出現是 0），`drop_check` 只列出現過的，可能是 `{}`
 - **連按兩次「確認」**：舊的 `request_id` 不會有結果，以最新的為準；收到不是正在等的結果，照樣回 `ack`，內容丟掉
-- **heartbeat**：1 Hz。`state` 是 `ok` / `no_depth` / `no_px4`（拿掉 `out_of_range`，太高、太低請看 `height` 的 `agl`：> 8 m 或 `null`）；`fps` 是最近 1 秒收到的深度幀數。server 超過 3 秒沒收到，XR 清掉建議並顯示「開發板離線」
+- **heartbeat**：1 Hz。太高、太低不在 `state` 裡，請看 `height` 的 `agl`（> 8 m 或 `null`）。server 超過 3 秒沒收到，XR 清掉建議並顯示「開發板離線」
 - **座標**：請直接用開發板給的 `forward`/`right`/`north`/`east`/`down`，不要自己再算；**只有畫面疊圖要重新投影**（§8.5）。`down_m` 往下為正，跟 PX4 的 z 同一個座標系。`pixel_u`/`pixel_v` 只對計算那一刻有效
 - **`drop_check` 只是警告**，不會鎖住投放按鈕
 - **`drop_check` 的 `ok` 會過期**：開發板只回報檢查當下的結果。請 XR/server 在水平移動超過 0.5 m 或過了 10 秒（暫定）時清掉「可以投放」
@@ -89,12 +110,12 @@
 | P3 | `ATTITUDE` 和位置的頻率能不能都調到 **≥ 30 Hz**？ | 頻率太低時，前後兩筆差太遠（> 100 ms）就對不齊，會回 `no_px4`，或座標誤差變大 | 用 `MAV_CMD_SET_MESSAGE_INTERVAL` 設定 | |
 | P4 | SITL 的 MAVLink（14540）怎麼送到 H1V1？改啟動參數，還是用 mavlink-router？ | 預設只送到 localhost，H1V1 在另一台機器（§4） | 建議 **mavlink-router**：server 和 QGC 在同一台 PC 都要聽 14550，或 A3 選 server 下指令也想用 14540 時，直接接會搶 port | |
 | P5 | 投放高度在哪裡設定？ | 投放由 PX4 控制，高度下限由開發板的視野決定（見 A2） | 2.5～5 m（落地偏移 0.5 m、r = 0.75 m 時），上限暫定 | |
+| P6 | 開發板直接接 PX4 的 MAVLink（14540），不經過 server 轉送，可以嗎？ | 要拿到原始的姿態和時間戳，才能跟深度幀對齊；server 掛掉時開發板也還有資料（§4） | 可以。server 或 QGC 要狀態請自己連 14550（S7） | |
 
 ### 要知道
 
-- 開發板直接接 PX4 的 **14540**，不經過 server 轉送；server 或 QGC 要無人機狀態請自己連 **14550**
 - 傾角 > 5° 時（roll、pitch 合成：`acos(cos(roll)·cos(pitch))`），推薦和投放前確認都會回 `tilted`，所以要懸停穩定再按；水平速度 > 0.3 m/s（暫定）時，投放前確認回 `moving`
-- 投放機構由 PX4 控制，開發板只給建議
+- 投放由 PX4 控制，開發板只給建議（已確定）
 
 ## 5. Gazebo
 

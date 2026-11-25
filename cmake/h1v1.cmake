@@ -1,5 +1,5 @@
-# H1V1（NT98690，Cortex-A73）交叉編譯。還沒用真的 SDK 驗證過。
-#   H1V1_TOOLCHAIN_PREFIX  例：/opt/nt98690/bin/aarch64-linux-gnu-
+# H1V1（NT98690，Cortex-A73）交叉編譯。用課程的工具鏈編譯、qemu 測試過，還沒在板子上驗證。
+#   H1V1_TOOLCHAIN_PREFIX  例：~/toolchains/aarch64-ca73-linux-gnueabihf-10.4.0/bin/aarch64-ca73-linux-gnu-
 #   H1V1_SYSROOT           可省略，用編譯器內建的 sysroot
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
@@ -10,7 +10,7 @@ set(H1V1_SYSROOT "$ENV{H1V1_SYSROOT}" CACHE PATH "Sysroot (optional)")
 list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES H1V1_TOOLCHAIN_PREFIX H1V1_SYSROOT)
 
 if(NOT H1V1_TOOLCHAIN_PREFIX)
-  message(FATAL_ERROR "Set H1V1_TOOLCHAIN_PREFIX, e.g. /opt/nt98690/bin/aarch64-linux-gnu-")
+  message(FATAL_ERROR "Set H1V1_TOOLCHAIN_PREFIX, e.g. /opt/arm/aarch64-ca73-linux-gnueabihf-10.4.0/bin/aarch64-ca73-linux-gnu-")
 endif()
 
 set(CMAKE_C_COMPILER "${H1V1_TOOLCHAIN_PREFIX}gcc")

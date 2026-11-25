@@ -1,5 +1,6 @@
 #include "core/config.h"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -239,6 +240,45 @@ Config::Timing read_timing(Section s) {
     return t;
 }
 
+// 深度是 RGB 降採樣來的，內參要用同樣的比例縮小（§4）。比例不寫死，§10 可能改傳 320×240。
+void check_depth_intrinsics(const Intrinsics& depth, const Intrinsics& rgb) {
+    constexpr double kTolerancePx = 0.1;  // 手抄時的四捨五入
+    if (rgb.width % depth.width != 0) {
+        fail("camera.depth.width", "must divide camera.rgb.width");
+    }
+    const int scale = rgb.width / depth.width;
+    if (depth.height * scale != rgb.height) {
+        fail("camera.depth.height", "must be camera.rgb.height / " + std::to_string(scale));
+    }
+    const auto check = [scale](const char* name, double depth_value, double rgb_value) {
+        if (std::abs(depth_value - rgb_value / scale) > kTolerancePx) {
+            fail(std::string("camera.depth.") + name, "must be camera.rgb." + std::string(name) +
+                     " / " + std::to_string(scale) + " = " + to_text(rgb_value / scale));
+        }
+    };
+    check("fx", depth.fx, rgb.fx);
+    check("fy", depth.fy, rgb.fy);
+    check("cx", depth.cx, rgb.cx);
+    check("cy", depth.cy, rgb.cy);
+}
+
+// 相機範圍要比最近、最遠距離寬，才報得出 too_low、too_high（§11）。
+void check_distances(const Config& c) {
+    const double nearest_limit = std::min(c.suggest.max_distance_m, c.drop_check.drop_max_height_m);
+    const double farthest_limit = std::max(c.suggest.max_distance_m, c.drop_check.drop_max_height_m);
+    if (c.limits.min_distance_m >= nearest_limit) {
+        fail("limits.min_distance_m",
+             "must be less than suggest.max_distance_m and drop_check.drop_max_height_m");
+    }
+    if (c.camera.near_m >= c.limits.min_distance_m) {
+        fail("camera.near_m", "must be less than limits.min_distance_m");
+    }
+    if (c.camera.far_m <= farthest_limit) {
+        fail("camera.far_m",
+             "must be greater than suggest.max_distance_m and drop_check.drop_max_height_m");
+    }
+}
+
 }  // namespace
 
 int ceil_cells(double length, double unit) {
@@ -267,6 +307,8 @@ Config parse_config(const std::string& text) {
     c.drop_check = read_drop_check(s.section("drop_check"));
     c.timing = read_timing(s.section("timing"));
     s.finish();
+    check_depth_intrinsics(c.camera.depth, c.camera.rgb);
+    check_distances(c);
     return c;
 }
 

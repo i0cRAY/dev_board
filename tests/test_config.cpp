@@ -185,10 +185,69 @@ TEST_CASE("contradicting fields are rejected") {
         j["drop_check"]["min_pass"] = 11;
         CHECK(mentions(error_of(j), "drop_check.min_pass"));
     }
+    SUBCASE("far not beyond the suggest limit") {
+        j["camera"]["far_m"] = 8.0;
+        CHECK(mentions(error_of(j), "camera.far_m"));
+    }
+    SUBCASE("far not beyond the drop limit") {
+        j["suggest"]["max_distance_m"] = 4.0;
+        j["camera"]["far_m"] = 5.0;
+        CHECK(mentions(error_of(j), "camera.far_m"));
+    }
+    SUBCASE("near not below the minimum distance") {
+        j["camera"]["near_m"] = 0.3;
+        CHECK(mentions(error_of(j), "camera.near_m"));
+    }
+    SUBCASE("minimum distance not below the suggest limit") {
+        j["limits"]["min_distance_m"] = 8.0;
+        j["drop_check"]["drop_max_height_m"] = 9.0;
+        CHECK(mentions(error_of(j), "limits.min_distance_m"));
+    }
+    SUBCASE("minimum distance not below the drop limit") {
+        j["limits"]["min_distance_m"] = 5.0;
+        CHECK(mentions(error_of(j), "limits.min_distance_m"));
+    }
+    SUBCASE("depth fx not scaled") {
+        j["camera"]["depth"]["fx"] = 337.2096;
+        CHECK(mentions(error_of(j), "camera.depth.fx"));
+    }
+    SUBCASE("depth fy not scaled") {
+        j["camera"]["depth"]["fy"] = 337.2096;
+        CHECK(mentions(error_of(j), "camera.depth.fy"));
+    }
+    SUBCASE("depth cx not scaled") {
+        j["camera"]["depth"]["cx"] = 79.0;
+        CHECK(mentions(error_of(j), "camera.depth.cx"));
+    }
+    SUBCASE("depth cy not scaled") {
+        j["camera"]["depth"]["cy"] = 59.0;
+        CHECK(mentions(error_of(j), "camera.depth.cy"));
+    }
+    SUBCASE("RGB width not a whole multiple of depth width") {
+        j["camera"]["depth"]["width"] = 150;
+        CHECK(mentions(error_of(j), "camera.depth.width"));
+    }
+    SUBCASE("depth height scaled differently from width") {
+        j["camera"]["depth"]["height"] = 100;
+        CHECK(mentions(error_of(j), "camera.depth.height"));
+    }
     SUBCASE("both UDP listeners on one port") {
         j["network"]["command_port"] = 14540;
         CHECK(mentions(error_of(j), "network.command_port"));
     }
+}
+
+TEST_CASE("depth may be 320x240 (spec section 10)") {
+    json j = valid();
+    j["camera"]["depth"] = {{"width", 320}, {"height", 240}, {"fx", 168.6048},
+                            {"fy", 168.6048}, {"cx", 160.0}, {"cy", 120.0}};
+    CHECK(error_of(j) == "");
+}
+
+TEST_CASE("depth intrinsics may be rounded when copied by hand") {
+    json j = valid();
+    j["camera"]["depth"]["fx"] = 84.30;
+    CHECK(error_of(j) == "");
 }
 
 TEST_CASE("text that is not a config object is rejected") {

@@ -26,7 +26,29 @@ build/pc-debug/dev_board config/dev_board.json
 
 ## 交叉編譯（H1V1）
 
-還沒用真的 NT98690 SDK 驗證過。先設 `H1V1_TOOLCHAIN_PREFIX`（必要時加 `H1V1_SYSROOT`），再用 `h1v1` preset，見 [cmake/h1v1.cmake](cmake/h1v1.cmake)。
+2026-11-24 用課程的工具鏈（GCC 10.4、glibc 2.35）編譯、在 qemu 跑過測試，還沒在板子上驗證。
+
+從課程的 Docker image 把工具鏈複製到本機（約 813 MB，只要做一次；不要放進 repo）：
+
+```bash
+mkdir -p ~/toolchains && docker run --rm --network none --user "$(id -u):$(id -g)" -v ~/toolchains:/out --entrypoint cp nt98690-course:d6d4ddb0c -a /opt/arm/aarch64-ca73-linux-gnueabihf-10.4.0 /out/
+```
+
+編譯（`H1V1_TOOLCHAIN_PREFIX` 會存進 cache，之後不用再設；sysroot 工具鏈內建，見 [cmake/h1v1.cmake](cmake/h1v1.cmake)）：
+
+```bash
+H1V1_TOOLCHAIN_PREFIX=~/toolchains/aarch64-ca73-linux-gnueabihf-10.4.0/bin/aarch64-ca73-linux-gnu- cmake --preset h1v1
+```
+
+```bash
+cmake --build --preset h1v1
+```
+
+在 PC 上用 qemu 跑測試（要裝 `qemu-user-static`）：
+
+```bash
+qemu-aarch64-static -L ~/toolchains/aarch64-ca73-linux-gnueabihf-10.4.0/aarch64-ca73-linux-gnu/sysroot build/h1v1/tests/dev_board_tests
+```
 
 ## 目錄
 

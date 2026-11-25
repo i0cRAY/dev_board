@@ -360,7 +360,7 @@ Z 中間有一個高 h 的台階（小於 D，沒被當成坑）時，擬合出�
 - margin 和距離都相同時用固定的順序選，距離用格數的整數平方比較，不用浮點數，PC 和 H1V1 才會選到同一點
 
 - 為什麼要看鄰居：無人機飛過去會停不準，實際投放的位置會在推薦點附近偏一點，周圍也合格才保險（物資落地後的彈跳、滑動由外圈 r 負責，兩件事分開）
-- 圈數 `k = ceil(定位誤差 / s)`，定位誤差用 Gazebo 量（95 百分位），預設 k = 1
+- 圈數 `k = ceil(定位誤差 / s)`，定位誤差用 Gazebo 量（95 百分位），預設 k = 1；手動、自動都支援的話，建議兩種都量，取較大的（待確認）
 - 需要的最小乾淨寬度：`Zw + 2r + 2k·s`（r = 0.75、k = 1 時是 3 m）
 
 ### 8.5 輸出欄位（找到時）
@@ -377,6 +377,7 @@ Z 中間有一個高 h 的台階（小於 D，沒被當成坑）時，擬合出�
 | `frame_timestamp`      | 判斷所用那一幀                                      |
 
 - `north_m`、`east_m` 是箱子要落下的點，**也是機身中心要飛到的位置**，不用另外補償，機頭朝哪個方向都一樣
+- `down_m` 是地面高度，**不可以當成 PX4 的目標高度**，否則無人機會飛向地面。自動飛過去時建議只用 `north_m`、`east_m`，維持目前高度（提案，待確認，§13）
 - 投影到像素：先減掉 `o.x`、`o.y` 回到相機原點，再反轉回相機座標：`p_b = Rᵀ · (x − o.x, y − o.y, depth_m)`，`(x_c, y_c, z_c) = (p_b.y, −p_b.x, p_b.z)`，再用 RGB 內參投影
 
 - **XR 疊圖要重新投影**（提案，待 server／XR 確認）：無人機一動，`pixel_u`、`pixel_v` 就不準了。用**現在**的無人機位置 `P`、姿態和推薦點 `T = (north_m, east_m, down_m)`：
@@ -437,7 +438,7 @@ Z 中間有一個高 h 的台階（小於 D，沒被當成坑）時，擬合出�
 | `type`      | string | 訊息種類                                   |
 | `session_id` | int   | 程式每次啟動時隨機產生（32-bit），執行期間不變 |
 | `seq`       | int    | 每個發送端各自遞增，**只有 `height`、`heartbeat` 用來去舊**（見下方） |
-| `timestamp` | int 或 `null` | 毫秒，Gazebo sim time。開發板送最後一次已知的 sim time，從沒收過就送 `null` |
+| `timestamp` | int 或 `null` | 毫秒，Gazebo sim time。開發板送最後一次已知的 sim time（只來自深度幀和 PX4），從沒收過就送 `null`；server 沒有 sim time 就送 `null`，不要填電腦時鐘（提案，S5）。開發板不使用 server 的 `timestamp` |
 | `payload`   | object | 內容                                       |
 
 - Port（數字待跟 server 確認）：
@@ -456,7 +457,7 @@ Z 中間有一個高 h 的台階（小於 D，沒被當成坑）時，擬合出�
   - 結果（`drop_suggestion`、`drop_check`）：server 收到後回 `ack`；開發板 300 ms 內沒收到 ack 就重送，最多 3 次。server 收到不是正在等的 `request_id`，照樣回 `ack`，內容丟掉。結果的 `payload` 帶 `request_session_id`（請求的 `session_id`），跟 server 目前的不同就丟掉
   - 等結果逾時：server 收到 `ack` 後 2.5 秒沒有結果，用同一個 `request_id` 再送一次取快取；再 1 秒沒有，XR 顯示失敗。逾時要比 1.5 秒長，因為開發板最慢 1.5 秒才放棄，還要加傳輸時間
 - 時間戳：
-  - 一律用 Gazebo sim time（深度幀和 PX4 SITL 都跟著 sim time 走）
+  - 一律用 Gazebo sim time（深度幀和 PX4 SITL 都跟著 sim time 走），沒有就填 `null`
   - `frame_timestamp` 是「計算用的那一幀的時刻」。一般的 H.264/RTP 不帶 sim time，不能拿來對齊 RGB 畫面；疊圖用重新投影（§8.5）
 
 ### 9.2 訊息列表
@@ -481,7 +482,7 @@ Z 中間有一個高 h 的台階（小於 D，沒被當成坑）時，擬合出�
 - `drop_suggestion` 找不到時（`ok=false`）：位置欄位（`forward_m`、`right_m`、`north_m`、`east_m`、`down_m`、`pixel_u`、`pixel_v`、`depth_m`、`height_diff_m`）**不送**，改送 `reason` 和 `counts`
 - `heartbeat` 的 `state`：依序判斷 `no_depth` → `no_px4`（條件見 §5）→ `ok`。太高、太低看 `height` 的 `agl`，不在這裡
 - `heartbeat` 的 `fps`：最近 1 秒收到的深度幀數
-- **可能是 `null` 的欄位**：開發板送出的 `timestamp`（從沒收過 sim time）；`agl`；`frame_timestamp`（從沒收過深度幀）；`height_diff_m`（正下方量不到，但旁邊有合格的點）
+- **可能是 `null` 的欄位**：`timestamp`（開發板從沒收過 sim time，或 server 沒有 sim time）；`agl`；`frame_timestamp`（從沒收過深度幀）；`height_diff_m`（正下方量不到，但旁邊有合格的點）
 - `counts` 的慣例：`drop_suggestion` 固定四個原因都列（沒出現是 0）；`drop_check` 只列出現過的原因，可能是 `{}`
 - `drop_check` 合格時（`ok=true`）：`reason` 為 `null`，不送 `counts`；不合格時送 `reason` 和 `counts`
 - 連按兩次確認（不同 `request_id`）時，舊的不會有結果，server 以最新的 `request_id` 為準
@@ -684,7 +685,7 @@ Z 中間有一個高 h 的台階（小於 D，沒被當成坑）時，擬合出�
   - server 要無人機狀態時自己連 14550，不從開發板轉送（§4）
   - `hole` 的顯示文字（§7）；`ok` 由 XR 清掉（水平移動 > 0.5 m 或 10 秒，暫定）
   - server 直接用開發板給的位移和世界座標，不要自己再算；只有畫面疊圖要重新投影（§8.5）
-  - 待決：誰把無人機飛到推薦點（server 用 north/east 下指令，或操作員手飛）
+  - 待確認：誰把無人機飛到推薦點，可能手動、自動都支援。自動時由 server 還是 PX4 組下指令、飛多高（§8.5）、怎麼取消或切回手動也要確認（discussion.md A3）
   - Godot 沒有內建 H.264/RTP 播放，要用 GDExtension（GStreamer/FFmpeg），或由 C++ server 解碼後再轉給 Godot；疊圖用重新投影（§8.5），RGB 串流的延遲要量
 - **PX4**（跨組只確定投放由 PX4 控制，開發板只給建議）
   - 開發板直接用 MAVLink 連 SITL 14540，不經過 server 轉送，可不可以（§4）

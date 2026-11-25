@@ -24,6 +24,8 @@ build/pc-debug/dev_board config/dev_board.json
 
 `pc-debug` 開 ASan＋UBSan；量時間用 `pc-release`。
 
+開 PR 和推到 main 時，GitHub Actions 會跑 `pc-debug` 和 `pc-release`（[ci.yml](.github/workflows/ci.yml)）。`h1v1` 的工具鏈不能公開，要在本機跑。
+
 ## 交叉編譯（H1V1）
 
 2026-11-24 用課程的工具鏈（GCC 10.4、glibc 2.35）編譯、在 qemu 跑過測試，還沒在板子上驗證。

@@ -26,6 +26,19 @@ add_library(dev_board_core STATIC src/core/config.cpp)
 target_include_directories(dev_board_core PUBLIC src)
 target_link_libraries(dev_board_core PRIVATE nlohmann_json)
 
+# 橋接程式也會連結，所以不能依賴其他函式庫
+add_library(depth_downsample STATIC src/downsample/downsample.cpp)
+target_include_directories(depth_downsample PUBLIC src)
+
+# 測試和回放程式用，開發板主程式不連結
+add_library(synthetic_depth STATIC src/synthetic/synthetic_depth.cpp)
+target_include_directories(synthetic_depth PUBLIC src)
+target_link_libraries(synthetic_depth PRIVATE depth_downsample)
+
+# 每幀 30 萬條射線，不最佳化的話場景測試會慢 5～10 倍；ASan、UBSan 照樣有開
+target_compile_options(depth_downsample PRIVATE $<$<CONFIG:Debug>:-O2>)
+target_compile_options(synthetic_depth PRIVATE $<$<CONFIG:Debug>:-O2>)
+
 add_executable(dev_board src/dev_board/main.cpp)
 target_link_libraries(dev_board PRIVATE dev_board_core)
 

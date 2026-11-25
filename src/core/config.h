@@ -45,7 +45,7 @@ struct Config {
 
     struct Zone {
         double width_m;       // Zw，已進位到 2s 的倍數
-        double ring_width_m;  // r，已進位到 s 的倍數
+        double ring_width_m;  // r，落地偏移進位到 s 的倍數再多一格
         int width_cells;
         int ring_cells;
         double box_short_side_m;

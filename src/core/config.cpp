@@ -174,7 +174,8 @@ Config::Grid read_grid(Section s) {
 Config::Zone read_zone(Section s, double cell) {
     Config::Zone z{};
     z.width_cells = 2 * ceil_cells(s.positive("width_m", kMaxLengthM), 2 * cell);
-    z.ring_cells = ceil_cells(s.positive("ring_width_m", kMaxLengthM), cell);
+    // 屋頂擋住下面時，最外一格落在邊緣上也看不出來，所以多一格（§10）
+    z.ring_cells = ceil_cells(s.positive("landing_offset_m", kMaxLengthM), cell) + 1;
     z.width_m = z.width_cells * cell;
     z.ring_width_m = z.ring_cells * cell;
     z.box_short_side_m = s.positive("box_short_side_m", kMaxLengthM);
@@ -279,6 +280,19 @@ void check_distances(const Config& c) {
     }
 }
 
+// 最高的投放高度水平拍時也放不下 Z＋外圈的話，每次確認都會是 too_low 或 too_high。
+void check_zone_fits_view(const Config& c) {
+    const double half_zone = c.zone.width_m / 2 + c.zone.ring_width_m;
+    const Intrinsics& depth = c.camera.depth;
+    const double half_view = c.drop_check.drop_max_height_m *
+        std::min(depth.height / (2 * depth.fy), depth.width / (2 * depth.fx));
+    if (half_zone > half_view) {
+        fail("zone", "zone and ring reach " + to_text(half_zone) + " m from the center, but only " +
+                 to_text(half_view) + " m is visible; check zone.landing_offset_m, zone.width_m, "
+                 "drop_check.drop_max_height_m and camera.depth");
+    }
+}
+
 }  // namespace
 
 int ceil_cells(double length, double unit) {
@@ -309,6 +323,7 @@ Config parse_config(const std::string& text) {
     s.finish();
     check_depth_intrinsics(c.camera.depth, c.camera.rgb);
     check_distances(c);
+    check_zone_fits_view(c);
     return c;
 }
 

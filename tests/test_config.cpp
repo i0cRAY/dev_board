@@ -39,9 +39,9 @@ TEST_CASE("shipped config matches spec section 11") {
     const Config c = load_config(kConfigPath);
     CHECK(c.grid.cell_size_m == 0.25);
     CHECK(c.zone.width_m == 1.0);
-    CHECK(c.zone.ring_width_m == 0.5);
+    CHECK(c.zone.ring_width_m == 0.75);
     CHECK(c.zone.width_cells == 4);
-    CHECK(c.zone.ring_cells == 2);
+    CHECK(c.zone.ring_cells == 3);
     CHECK(c.zone.box_short_side_m == 0.4);
     CHECK(c.evaluate.hole_depth_m == 0.4);
     CHECK(c.evaluate.max_slope_deg == 10.0);
@@ -84,15 +84,46 @@ TEST_CASE("depth intrinsics are the RGB intrinsics scaled by 1/4") {
     CHECK(c.camera.depth.cy == doctest::Approx(c.camera.rgb.cy / 4));
 }
 
-TEST_CASE("r and Zw are rounded up to whole cells") {
+TEST_CASE("the ring is the landing offset rounded up to whole cells plus one") {
     json j = valid();
-    j["zone"]["ring_width_m"] = 0.35;
+    SUBCASE("0.2 m") {
+        j["zone"]["landing_offset_m"] = 0.2;
+        const Config c = parse_config(j.dump());
+        CHECK(c.zone.ring_width_m == 0.5);
+        CHECK(c.zone.ring_cells == 2);
+    }
+    SUBCASE("0.35 m") {
+        j["zone"]["landing_offset_m"] = 0.35;
+        const Config c = parse_config(j.dump());
+        CHECK(c.zone.ring_width_m == 0.75);
+        CHECK(c.zone.ring_cells == 3);
+    }
+    SUBCASE("0.6 m") {
+        j["zone"]["landing_offset_m"] = 0.6;
+        const Config c = parse_config(j.dump());
+        CHECK(c.zone.ring_width_m == 1.0);
+        CHECK(c.zone.ring_cells == 4);
+    }
+}
+
+TEST_CASE("Zw is rounded up to an even number of cells") {
+    json j = valid();
     j["zone"]["width_m"] = 1.2;
     const Config c = parse_config(j.dump());
-    CHECK(c.zone.ring_width_m == 0.5);
     CHECK(c.zone.width_m == 1.5);
-    CHECK(c.zone.ring_cells == 2);
     CHECK(c.zone.width_cells == 6);
+}
+
+TEST_CASE("the old ring width field is rejected") {
+    json j = valid();
+    j["zone"]["ring_width_m"] = 0.5;
+    SUBCASE("beside the landing offset") {
+        CHECK(mentions(error_of(j), "zone.ring_width_m"));
+    }
+    SUBCASE("instead of the landing offset") {
+        j["zone"].erase("landing_offset_m");
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
+    }
 }
 
 TEST_CASE("rounding ignores floating point error but not real excess") {
@@ -149,9 +180,13 @@ TEST_CASE("bad fields are rejected and named") {
         j["grid"]["cell_size_m"] = 0;
         CHECK(mentions(error_of(j), "grid.cell_size_m"));
     }
-    SUBCASE("negative ring width") {
-        j["zone"]["ring_width_m"] = -0.5;
-        CHECK(mentions(error_of(j), "zone.ring_width_m"));
+    SUBCASE("zero landing offset") {
+        j["zone"]["landing_offset_m"] = 0;
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
+    }
+    SUBCASE("negative landing offset") {
+        j["zone"]["landing_offset_m"] = -0.5;
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
     }
     SUBCASE("ratio above one") {
         j["evaluate"]["max_zone_invalid_ratio"] = 10;
@@ -184,6 +219,29 @@ TEST_CASE("contradicting fields are rejected") {
     SUBCASE("more passes than frames") {
         j["drop_check"]["min_pass"] = 11;
         CHECK(mentions(error_of(j), "drop_check.min_pass"));
+    }
+    SUBCASE("zone and ring not visible from the drop limit") {
+        j["zone"]["landing_offset_m"] = 3.0;  // (0.5 + 3.25) / tan(vfov / 2) = 5.27 m > 5 m
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
+    }
+    SUBCASE("zone and ring not visible vertically") {
+        j["camera"]["rgb"]["fy"] = 674.4192;  // vfov 約 39°，5 m 高只看得到 ±1.78 m
+        j["camera"]["depth"]["fy"] = 168.6048;
+        j["zone"]["landing_offset_m"] = 1.5;  // 0.5 + 1.75 = 2.25 m
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
+    }
+    SUBCASE("zone and ring not visible horizontally") {
+        j["camera"]["rgb"]["fx"] = 1011.6288;  // 5 m 高只看得到左右 ±1.58 m
+        j["camera"]["depth"]["fx"] = 252.9072;
+        j["zone"]["landing_offset_m"] = 1.0;  // 0.5 + 1.25 = 1.75 m
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
+    }
+    SUBCASE("drop limit too low to see the zone and ring") {
+        j["drop_check"]["drop_max_height_m"] = 1.5;
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
+        CHECK(mentions(error_of(j), "zone.width_m"));
+        CHECK(mentions(error_of(j), "drop_check.drop_max_height_m"));
+        CHECK(mentions(error_of(j), "camera.depth"));
     }
     SUBCASE("far not beyond the suggest limit") {
         j["camera"]["far_m"] = 8.0;
@@ -235,6 +293,20 @@ TEST_CASE("contradicting fields are rejected") {
         j["network"]["command_port"] = 14540;
         CHECK(mentions(error_of(j), "network.command_port"));
     }
+}
+
+TEST_CASE("the widest ring still visible from the drop limit is accepted") {
+    json j = valid();
+    j["zone"]["landing_offset_m"] = 2.75;  // (0.5 + 3.0) / tan(vfov / 2) = 4.92 m < 5 m
+    CHECK(error_of(j) == "");
+}
+
+TEST_CASE("the horizontal view is as wide as the image, not as tall") {
+    json j = valid();
+    j["camera"]["rgb"]["fx"] = 505.8144;  // 5 m 高看得到左右 ±3.16 m
+    j["camera"]["depth"]["fx"] = 126.4536;
+    j["zone"]["landing_offset_m"] = 2.0;  // 0.5 + 2.25 = 2.75 m
+    CHECK(error_of(j) == "");
 }
 
 TEST_CASE("depth may be 320x240 (spec section 10)") {

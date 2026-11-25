@@ -84,14 +84,33 @@ TEST_CASE("depth intrinsics are the RGB intrinsics scaled by 1/4") {
     CHECK(c.camera.depth.cy == doctest::Approx(c.camera.rgb.cy / 4));
 }
 
-TEST_CASE("r and Zw are rounded up to whole cells") {
+TEST_CASE("the ring is the landing offset rounded up to whole cells plus one") {
     json j = valid();
-    j["zone"]["landing_offset_m"] = 0.35;
+    SUBCASE("0.2 m") {
+        j["zone"]["landing_offset_m"] = 0.2;
+        const Config c = parse_config(j.dump());
+        CHECK(c.zone.ring_width_m == 0.5);
+        CHECK(c.zone.ring_cells == 2);
+    }
+    SUBCASE("0.35 m") {
+        j["zone"]["landing_offset_m"] = 0.35;
+        const Config c = parse_config(j.dump());
+        CHECK(c.zone.ring_width_m == 0.75);
+        CHECK(c.zone.ring_cells == 3);
+    }
+    SUBCASE("0.6 m") {
+        j["zone"]["landing_offset_m"] = 0.6;
+        const Config c = parse_config(j.dump());
+        CHECK(c.zone.ring_width_m == 1.0);
+        CHECK(c.zone.ring_cells == 4);
+    }
+}
+
+TEST_CASE("Zw is rounded up to an even number of cells") {
+    json j = valid();
     j["zone"]["width_m"] = 1.2;
     const Config c = parse_config(j.dump());
-    CHECK(c.zone.ring_width_m == 0.75);
     CHECK(c.zone.width_m == 1.5);
-    CHECK(c.zone.ring_cells == 3);
     CHECK(c.zone.width_cells == 6);
 }
 

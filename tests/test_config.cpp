@@ -39,9 +39,9 @@ TEST_CASE("shipped config matches spec section 11") {
     const Config c = load_config(kConfigPath);
     CHECK(c.grid.cell_size_m == 0.25);
     CHECK(c.zone.width_m == 1.0);
-    CHECK(c.zone.ring_width_m == 0.5);
+    CHECK(c.zone.ring_width_m == 0.75);
     CHECK(c.zone.width_cells == 4);
-    CHECK(c.zone.ring_cells == 2);
+    CHECK(c.zone.ring_cells == 3);
     CHECK(c.zone.box_short_side_m == 0.4);
     CHECK(c.evaluate.hole_depth_m == 0.4);
     CHECK(c.evaluate.max_slope_deg == 10.0);
@@ -86,13 +86,25 @@ TEST_CASE("depth intrinsics are the RGB intrinsics scaled by 1/4") {
 
 TEST_CASE("r and Zw are rounded up to whole cells") {
     json j = valid();
-    j["zone"]["ring_width_m"] = 0.35;
+    j["zone"]["landing_offset_m"] = 0.35;
     j["zone"]["width_m"] = 1.2;
     const Config c = parse_config(j.dump());
-    CHECK(c.zone.ring_width_m == 0.5);
+    CHECK(c.zone.ring_width_m == 0.75);
     CHECK(c.zone.width_m == 1.5);
-    CHECK(c.zone.ring_cells == 2);
+    CHECK(c.zone.ring_cells == 3);
     CHECK(c.zone.width_cells == 6);
+}
+
+TEST_CASE("the old ring width field is rejected") {
+    json j = valid();
+    j["zone"]["ring_width_m"] = 0.5;
+    SUBCASE("beside the landing offset") {
+        CHECK(mentions(error_of(j), "zone.ring_width_m"));
+    }
+    SUBCASE("instead of the landing offset") {
+        j["zone"].erase("landing_offset_m");
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
+    }
 }
 
 TEST_CASE("rounding ignores floating point error but not real excess") {
@@ -149,9 +161,13 @@ TEST_CASE("bad fields are rejected and named") {
         j["grid"]["cell_size_m"] = 0;
         CHECK(mentions(error_of(j), "grid.cell_size_m"));
     }
-    SUBCASE("negative ring width") {
-        j["zone"]["ring_width_m"] = -0.5;
-        CHECK(mentions(error_of(j), "zone.ring_width_m"));
+    SUBCASE("zero landing offset") {
+        j["zone"]["landing_offset_m"] = 0;
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
+    }
+    SUBCASE("negative landing offset") {
+        j["zone"]["landing_offset_m"] = -0.5;
+        CHECK(mentions(error_of(j), "zone.landing_offset_m"));
     }
     SUBCASE("ratio above one") {
         j["evaluate"]["max_zone_invalid_ratio"] = 10;

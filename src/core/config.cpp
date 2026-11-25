@@ -174,7 +174,8 @@ Config::Grid read_grid(Section s) {
 Config::Zone read_zone(Section s, double cell) {
     Config::Zone z{};
     z.width_cells = 2 * ceil_cells(s.positive("width_m", kMaxLengthM), 2 * cell);
-    z.ring_cells = ceil_cells(s.positive("ring_width_m", kMaxLengthM), cell);
+    // 屋頂擋住下面時，最外一格落在邊緣上也看不出來，所以多一格（§10）
+    z.ring_cells = ceil_cells(s.positive("landing_offset_m", kMaxLengthM), cell) + 1;
     z.width_m = z.width_cells * cell;
     z.ring_width_m = z.ring_cells * cell;
     z.box_short_side_m = s.positive("box_short_side_m", kMaxLengthM);

@@ -7,6 +7,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(DEV_BOARD_SANITIZE "Enable ASan and UBSan" OFF)
 add_compile_options(-Wall -Wextra -Wpedantic -Wshadow)
+# aarch64 的 GCC 預設會把乘加合併成一個指令，門檻附近的結果會跟 PC 不同
+add_compile_options(-ffp-contract=off)
 if(DEV_BOARD_SANITIZE)
   add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address,undefined)

@@ -7,15 +7,14 @@
 namespace dev_board {
 namespace {
 
-constexpr double kMaxFarM = 65.535;  // uint16 公釐的上限
-
 // 0 = 無效。先檢查範圍再轉型：inf、NaN、負數直接轉成整數是未定義行為。
-std::uint16_t to_mm(float depth_m, double near_m, double far_m) {
-    const double d = static_cast<double>(depth_m);
-    if (!(d >= near_m && d <= far_m)) {  // 寫成 ! 才會擋掉 NaN
+// 用 float 比較：15.1 轉成 float 會變大，跟 double 比的話剛好在 far 的深度會變無效。
+// far 轉成 float 頂多大 0.004 mm，進位後不會超過 uint16。
+std::uint16_t to_mm(float depth_m, float near_m, float far_m) {
+    if (!(depth_m >= near_m && depth_m <= far_m)) {  // 寫成 ! 才會擋掉 NaN
         return 0;
     }
-    return static_cast<std::uint16_t>(std::lround(d * 1000.0));
+    return static_cast<std::uint16_t>(std::lround(static_cast<double>(depth_m) * 1000.0));
 }
 
 int scale_of(ImageSize from, ImageSize to) {
@@ -36,6 +35,8 @@ std::vector<std::uint16_t> downsample_depth(const float* depth_m, ImageSize from
         throw std::invalid_argument("downsample_depth: need 0 < near < far <= 65.535 m");
     }
 
+    const float near_f = static_cast<float>(near_m);
+    const float far_f = static_cast<float>(far_m);
     const std::size_t block_size = static_cast<std::size_t>(scale) * static_cast<std::size_t>(scale);
     std::vector<std::uint16_t> frame;
     frame.reserve(static_cast<std::size_t>(to.width) * static_cast<std::size_t>(to.height));
@@ -49,7 +50,7 @@ std::vector<std::uint16_t> downsample_depth(const float* depth_m, ImageSize from
                     const std::size_t index =
                         static_cast<std::size_t>(row) * static_cast<std::size_t>(from.width) +
                         static_cast<std::size_t>(col);
-                    const std::uint16_t mm = to_mm(depth_m[index], near_m, far_m);
+                    const std::uint16_t mm = to_mm(depth_m[index], near_f, far_f);
                     if (mm != 0) {
                         valid.push_back(mm);
                     }

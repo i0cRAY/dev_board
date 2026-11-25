@@ -220,6 +220,20 @@ TEST_CASE("synthetic: rays parallel to the sides of blocks and pits") {
         scene.pits = {{square_at(2.0, 0.0, 1.0), 1.0}, {square_at(-2.0, 0.0, 1.0), 1.0}};
         CHECK(center() == 5000);
     }
+    // 射線剛好在邊上，算 (邊 − 原點) ÷ 方向會變成 0/0
+    SUBCASE("exactly on an edge") {
+        for (const Footprint& f : {Footprint{0, 1, -1, 1}, {-1, 0, -1, 1}, {-1, 1, 0, 1}, {-1, 1, -1, 0}}) {
+            CAPTURE(f.north_min_m);
+            CAPTURE(f.north_max_m);
+            CAPTURE(f.east_min_m);
+            scene = {};
+            scene.blocks = {{f, 1.0}};
+            CHECK(center() == 4000);
+            scene = {};
+            scene.pits = {{f, 1.0}};
+            CHECK(center() == 6000);
+        }
+    }
 }
 
 TEST_CASE("synthetic: t_cam is rotated with the body") {
@@ -332,6 +346,15 @@ TEST_CASE("synthetic: no wall between touching or overlapping pits") {
     CHECK(pixel(frame, 95, 60) == 6000);  // 只有一個坑時這裡是壁
 }
 
+TEST_CASE("synthetic: no wall between touching pits whose edges differ by a rounding error") {
+    Scene scene;
+    const double edge = 0.1 + 0.2;
+    REQUIRE(edge != 0.3);
+    SUBCASE("in order") { scene.pits = {{{-1, 1, -1, 0.3}, 1.0}, {{-1, 1, edge, 2}, 1.0}}; }
+    SUBCASE("other way round") { scene.pits = {{{-1, 1, edge, 2}, 1.0}, {{-1, 1, -1, 0.3}, 1.0}}; }
+    CHECK(pixel(synthesize_depth(scene, camera(), at_height(5.0)), 84, 60) == 6000);
+}
+
 TEST_CASE("synthetic: a deeper pit next to a shallow one has a wall up to the shallow floor") {
     Scene scene;
     scene.pits = {{{-1, 1, -1, 1}, 1.0}, {{-1, 1, 1, 2}, 0.3}};
@@ -397,6 +420,34 @@ TEST_CASE("synthetic: follows the camera sizes in the config") {
     const auto frame = synthesize_depth({}, c, at_height(5.0));
     CHECK(frame.size() == 320 * 240);
     CHECK(all_equal(frame, 5000));
+}
+
+// fx ≠ fy、光軸不在中央，頂面中心在原始像素 u = 250 + 1.2/4·400 = 370、v = 260 − 1.0/4·300 = 185
+TEST_CASE("synthetic: uses fx, fy, cx and cy separately") {
+    Config::Camera c = camera();
+    c.rgb = {640, 480, 400.0, 300.0, 250.0, 260.0};
+    c.depth = {160, 120, 100.0, 75.0, 62.5, 65.0};
+    Scene scene;
+    scene.blocks = {{square_at(1.0, 1.2, 0.2), 1.0}};
+    const auto frame = synthesize_depth(scene, c, at_height(5.0));
+    CHECK(pixel(frame, 92, 46) == 4000);
+    // 頂面是 u 350～390、v 170～200，這些在它外面
+    CHECK(pixel(frame, 92, 41) == 5000);
+    CHECK(pixel(frame, 98, 46) == 5000);
+    CHECK(pixel(frame, 80, 46) == 5000);
+}
+
+TEST_CASE("synthetic: uses near and far from the config") {
+    Config::Camera c = camera();
+    const auto run = [&c](double near_m, double far_m, double height_m) {
+        c.near_m = near_m;
+        c.far_m = far_m;
+        return synthesize_depth({}, c, at_height(height_m));
+    };
+    CHECK(all_equal(run(4.5, 5.5, 5.0), 5000));
+    CHECK(all_equal(run(5.5, 20.0, 5.0), 0));
+    CHECK(all_equal(run(0.1, 4.5, 5.0), 0));
+    CHECK(all_equal(run(0.1, 15.1, 15.1), 15100));
 }
 
 TEST_CASE("synthetic: rejects scenes and poses that make no sense") {

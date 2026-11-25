@@ -49,6 +49,22 @@ TEST_CASE("downsample keeps depths at near and far") {
     CHECK(downsample_depth(at_near.data(), {4, 4}, {1, 1}, 0.25, 20.0)[0] == 250);
 }
 
+// 15.1 轉成 float 會變大、0.7 會變小，剛好在邊界上的深度還是要算有效
+TEST_CASE("downsample keeps depths at near and far that float cannot represent exactly") {
+    const auto run = [](float depth_m, double near_m, double far_m) {
+        return downsample_depth(&depth_m, {1, 1}, {1, 1}, near_m, far_m)[0];
+    };
+    REQUIRE(static_cast<double>(15.1F) > 15.1);
+    REQUIRE(static_cast<double>(0.7F) < 0.7);
+    CHECK(run(15.1F, 0.7, 15.1) == 15100);
+    CHECK(run(std::nextafter(15.1F, kInf), 0.7, 15.1) == 0);
+    CHECK(run(0.7F, 0.7, 15.1) == 700);
+    CHECK(run(std::nextafter(0.7F, 0.0F), 0.7, 15.1) == 0);
+    CHECK(run(65.535F, 0.7, 65.535) == 65535);
+    CHECK(run(std::nextafter(65.535F, kInf), 0.7, 65.535) == 0);
+}
+
+// NaN 只驗結果：x86 和 aarch64 的 lround(NaN) 轉成 uint16 剛好也是 0，拿掉檢查這裡也不會失敗
 TEST_CASE("downsample outputs 0 for depths that are not finite or outside near and far") {
     for (const float invalid : {kInf, -kInf, kNan, -1.0F, 0.0F, 0.05F, 25.0F, 70.0F}) {
         CAPTURE(invalid);
@@ -121,6 +137,7 @@ TEST_CASE("downsample rejects sizes it cannot scale and ranges that do not fit i
     CHECK_THROWS_AS(run({17, 16}, {4, 4}, 0.1, 20.0), std::invalid_argument);
     CHECK_THROWS_AS(run({16, 17}, {4, 4}, 0.1, 20.0), std::invalid_argument);
     CHECK_THROWS_AS(run({0, 0}, {4, 4}, 0.1, 20.0), std::invalid_argument);
+    CHECK_THROWS_AS(run({16, 16}, {4, 4}, 0.1, 65.536), std::invalid_argument);
     CHECK_THROWS_AS(run({16, 16}, {4, 4}, 0.1, 70.0), std::invalid_argument);
     CHECK_THROWS_AS(run({16, 16}, {4, 4}, 0.0, 20.0), std::invalid_argument);
     CHECK_THROWS_AS(run({16, 16}, {4, 4}, 20.0, 20.0), std::invalid_argument);

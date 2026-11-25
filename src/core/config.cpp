@@ -8,6 +8,8 @@
 #include <sstream>
 #include <utility>
 
+#include "downsample/downsample.h"
+
 namespace dev_board {
 namespace {
 
@@ -155,7 +157,7 @@ Config::Camera read_camera(Section s) {
     c.depth = read_intrinsics(s.section("depth"));
     c.rgb = read_intrinsics(s.section("rgb"));
     c.near_m = s.positive("near_m", kMaxLengthM);
-    c.far_m = s.positive("far_m", 65.535);  // uint16 公釐的上限
+    c.far_m = s.positive("far_m", kMaxFarM);
     c.t_cam = s.vector3("t_cam");
     if (c.near_m >= c.far_m) {
         fail(s.path_of("near_m"), "must be less than far_m");

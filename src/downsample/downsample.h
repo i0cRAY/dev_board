@@ -5,6 +5,8 @@
 
 namespace dev_board {
 
+constexpr double kMaxFarM = 65.535;  // uint16 公釐的上限
+
 // 一張深度影像的大小（像素）
 struct ImageSize {
     int width;

@@ -15,6 +15,7 @@ namespace dev_board::synthetic {
 namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
+constexpr double kTouchT = 1e-9;  // 兩個坑的邊只差捨入誤差（0.3 和 0.1 + 0.2）也算相鄰
 
 using Vec3 = std::array<double, 3>;
 
@@ -79,7 +80,7 @@ double through_pits(const Ray& ray, const std::vector<Pit>& pits, double t) {
         double farthest = t;
         for (const Pit& pit : pits) {
             const Interval inside = prism(ray, pit.footprint, -pit.depth_m, 0.0);
-            if (inside.begin <= t) {
+            if (inside.begin <= t + kTouchT) {
                 farthest = std::max(farthest, inside.end);
             }
         }

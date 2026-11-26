@@ -88,6 +88,18 @@ TEST_CASE("height: an even number of cells takes the mean of the middle two") {
     CHECK(std::abs(*agl - 2.5) < 0.005);
 }
 
+// 同一個台，地面那邊少一格（u 80～86、v 60～66 是 x −0.25～0、y 0～0.25 m）：8 格 −2、7 格 −3
+TEST_CASE("height: an odd number of cells takes the middle one") {
+    const Config config = load_config(kConfigPath);
+    Scene scene;
+    scene.blocks = {{{0.0, 10.0, -10.0, 10.0}, 1.0}};
+    synthetic::Options options;
+    options.invalid = {{80, 60, 7, 7}};
+    const std::optional<double> agl = agl_of(config, scene, hover(3.0), options);
+    REQUIRE(agl.has_value());
+    CHECK(std::abs(*agl - 2.0) < 0.005);
+}
+
 // Z 在兩個 1 m 高的台中間 1.2 m 寬的地面上。7.5 m 高傾斜 5° 時，點的水平位置要是沒有補償，
 // 會差約 1.3 m，台上的點就落進 Z
 TEST_CASE("height: tilt is compensated in where the points land") {
@@ -312,24 +324,42 @@ TEST_CASE("height: a frame newer than the last attitude or position gives no hei
     CHECK_FALSE(core.on_depth(frame_of(config, {}, hover(7.5), 1050), at(10)).height.has_value());
 }
 
-// 每 100 ms 一筆，最新的是 1200 ms：只留 200 ms 以後的
+// 每 100 ms 一筆。最新的是 1200 ms 的那一路只留 200 ms 以後的，1100 ms 的留 100 ms 以後的
 TEST_CASE("height: PX4 samples are kept for 1 second") {
     const Config config = load_config(kConfigPath);
     DecisionCore core(config);
-    for (std::uint32_t ms = 0; ms <= 1200; ms += 100) {
-        core.on_attitude(attitude_at(ms, 0.0, 0.0), at(static_cast<int>(ms)));
-        core.on_position(position_at(ms), at(static_cast<int>(ms)));
-    }
+    const auto send = [&core](std::uint32_t last_attitude_ms, std::uint32_t last_position_ms) {
+        for (std::uint32_t ms = 0; ms <= 1200; ms += 100) {
+            if (ms <= last_attitude_ms) {
+                core.on_attitude(attitude_at(ms, 0.0, 0.0), at(static_cast<int>(ms)));
+            }
+            if (ms <= last_position_ms) {
+                core.on_position(position_at(ms), at(static_cast<int>(ms)));
+            }
+        }
+    };
     SUBCASE("attitude and position both kept") {
+        send(1200, 1200);
         const Results results = core.on_depth(frame_of(config, {}, hover(7.5), 250), at(1210));
         REQUIRE(results.height.has_value());
         CHECK(results.height->agl.has_value());
     }
     SUBCASE("older than the buffer") {
+        send(1200, 1200);
+        CHECK_FALSE(core.on_depth(frame_of(config, {}, hover(7.5), 150), at(1210)).height.has_value());
+    }
+    SUBCASE("only the attitude is older than the buffer") {
+        send(1200, 1100);
         CHECK_FALSE(core.on_depth(frame_of(config, {}, hover(7.5), 150), at(1210)).height.has_value());
     }
     SUBCASE("only the position is older than the buffer") {
-        core.on_attitude(attitude_at(100, 0.0, 0.0), at(1205));
+        send(1100, 1200);
         CHECK_FALSE(core.on_depth(frame_of(config, {}, hover(7.5), 150), at(1210)).height.has_value());
+    }
+    SUBCASE("both kept when each stream's newest is 1100 ms") {
+        send(1100, 1100);
+        const Results results = core.on_depth(frame_of(config, {}, hover(7.5), 150), at(1210));
+        REQUIRE(results.height.has_value());
+        CHECK(results.height->agl.has_value());
     }
 }

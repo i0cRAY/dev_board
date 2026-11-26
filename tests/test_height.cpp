@@ -365,8 +365,8 @@ TEST_CASE("height: PX4 samples are kept for 1 second") {
     }
 }
 
-// 非有限值的那一筆不收：同一時間的幀改用前後兩筆內插
-TEST_CASE("height: an attitude sample that is not finite is ignored") {
+// 不是有限值、或超過 ±π 的那一筆不收：同一時間的幀改用前後兩筆內插
+TEST_CASE("height: an attitude sample that is not a real angle is ignored") {
     const Config config = load_config(kConfigPath);
     DecisionCore core(config);
     core.on_attitude(attitude_at(1000, 0.0, 0.0), at(0));
@@ -378,6 +378,9 @@ TEST_CASE("height: an attitude sample that is not finite is ignored") {
     SUBCASE("roll inf") { bad.roll = std::numeric_limits<double>::infinity(); }
     SUBCASE("pitch NaN") { bad.pitch = std::numeric_limits<double>::quiet_NaN(); }
     SUBCASE("pitch -inf") { bad.pitch = -std::numeric_limits<double>::infinity(); }
+    SUBCASE("roll beyond pi") { bad.roll = 4.0; }
+    SUBCASE("pitch beyond -pi") { bad.pitch = -4.0; }
+    SUBCASE("roll 1e308") { bad.roll = 1e308; }
     core.on_attitude(bad, at(4));
     const Results results = core.on_depth(frame_of(config, {}, hover(7.5), 1050), at(10));
     REQUIRE(results.height.has_value());

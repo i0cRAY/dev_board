@@ -20,3 +20,7 @@ Blocked by: 04
 - [ ] 同一份資料推薦兩次結果相同
 - [ ] `pc-release` 記錄 7.5 m 平地的推薦時間，寫在這張 ticket 的 Comments，只當參考
 - [ ] `pc-debug`、`pc-release`、`h1v1`＋qemu 測試通過
+
+## Comments
+
+2026-11-26（03 留下的事）：03 的 `on_attitude` 對 roll、pitch 不在 ±π 內（含 NaN、inf）的姿態整筆不收。06 開始用 yaw 和位置的值，要用同樣的規則檢查 yaw（不在 ±π 內）和位置、速度（不是有限值），一樣整筆不收，並補測試。

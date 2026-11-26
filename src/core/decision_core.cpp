@@ -11,6 +11,8 @@ namespace {
 
 using Vec3 = std::array<double, 3>;
 
+constexpr double kPi = 3.14159265358979323846;
+
 // 一個細格裡的有效點
 struct Cell {
     int valid = 0;
@@ -79,8 +81,9 @@ DecisionCore::DecisionCore(const Config& config) : config_(config) {
 }
 
 Results DecisionCore::on_attitude(const Attitude& attitude, Now) {
-    // NaN、inf 進到後面會變成未定義的浮點數轉整數。yaw 在第一個用到的 ticket（06）一起檢查
-    if (!std::isfinite(attitude.roll) || !std::isfinite(attitude.pitch)) {
+    // 不是 ±π 內的角度（含 NaN、inf）整筆不收：進到後面會變成未定義的浮點數轉整數，
+    // 很大的有限值內插時也會溢位。yaw 在第一個用到的 ticket（06）一起檢查
+    if (!(std::abs(attitude.roll) <= kPi) || !(std::abs(attitude.pitch) <= kPi)) {
         return {};
     }
     remember(attitudes_, attitude, config_.timing.px4_buffer_ms);

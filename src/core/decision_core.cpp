@@ -39,7 +39,10 @@ Results DecisionCore::on_attitude(const Attitude& attitude, Now) {
     return {};
 }
 
-Results DecisionCore::on_position(const Position&, Now) { return {}; }
+Results DecisionCore::on_position(const Position& position, Now) {
+    position_ = position;
+    return {};
+}
 
 Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
     const Intrinsics& k = config_.camera.depth;
@@ -49,10 +52,32 @@ Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
     if (frame.depth_mm.size() != static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height)) {
         throw std::invalid_argument("DecisionCore::on_depth: depth_mm is not width x height");
     }
+    depth_seen_ = true;
+    const DataState now_state = state();
+    if (now_state != DataState::ok) {
+        return {Height{std::nullopt, now_state}};
+    }
     return {Height{agl(frame, *attitude_), DataState::ok}};
 }
 
-Results DecisionCore::on_tick(Now) { return {}; }
+Results DecisionCore::on_tick(Now) {
+    const DataState now_state = state();
+    if (now_state != DataState::ok) {
+        return {Height{std::nullopt, now_state}};
+    }
+    return {};
+}
+
+// 依序 no_depth → no_px4 → ok（§9.2 heartbeat）
+DataState DecisionCore::state() const {
+    if (!depth_seen_) {
+        return DataState::no_depth;
+    }
+    if (!attitude_ || !position_) {
+        return DataState::no_px4;
+    }
+    return DataState::ok;
+}
 
 // §5 第 3～5 步把每個有效點放進正下方 Z 的細格，再照 §6.1 取中位數
 std::optional<double> DecisionCore::agl(const DepthFrame& frame, const Attitude& attitude) const {

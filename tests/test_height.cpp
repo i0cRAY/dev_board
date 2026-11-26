@@ -198,3 +198,45 @@ TEST_CASE("height: a frame whose size does not match camera.depth is rejected") 
     SUBCASE("data") { frame.depth_mm.pop_back(); }
     CHECK_THROWS_AS(core.on_depth(frame, at(5)), std::invalid_argument);
 }
+
+TEST_CASE("height: data state before depth or PX4 has arrived") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    SUBCASE("nothing yet: no_depth") {}
+    SUBCASE("only PX4: no_depth") {
+        core.on_attitude({0, 0.0, 0.0, 0.0}, at(0));
+        core.on_position({0, 0.0, 0.0, -3.0, 0.0, 0.0}, at(0));
+    }
+    const Results tick = core.on_tick(at(10));
+    REQUIRE(tick.height.has_value());
+    CHECK(tick.height->state == DataState::no_depth);
+    CHECK_FALSE(tick.height->agl.has_value());
+}
+
+TEST_CASE("height: a frame without attitude or position reports no_px4") {
+    const Config config = load_config(kConfigPath);
+    const DepthFrame frame = frame_of(config, {}, hover(3.0), 0);
+    DecisionCore core(config);
+    SUBCASE("neither") {}
+    SUBCASE("no position") { core.on_attitude({0, 0.0, 0.0, 0.0}, at(0)); }
+    SUBCASE("no attitude") { core.on_position({0, 0.0, 0.0, -3.0, 0.0, 0.0}, at(0)); }
+
+    const Results results = core.on_depth(frame, at(5));
+    REQUIRE(results.height.has_value());
+    CHECK(results.height->state == DataState::no_px4);
+    CHECK_FALSE(results.height->agl.has_value());
+
+    const Results tick = core.on_tick(at(10));
+    REQUIRE(tick.height.has_value());
+    CHECK(tick.height->state == DataState::no_px4);
+    CHECK_FALSE(tick.height->agl.has_value());
+}
+
+TEST_CASE("height: a tick with depth and PX4 present returns nothing") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    core.on_attitude({0, 0.0, 0.0, 0.0}, at(0));
+    core.on_position({0, 0.0, 0.0, -3.0, 0.0, 0.0}, at(0));
+    REQUIRE(core.on_depth(frame_of(config, {}, hover(3.0), 0), at(5)).height.has_value());
+    CHECK_FALSE(core.on_tick(at(10)).height.has_value());
+}

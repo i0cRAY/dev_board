@@ -67,11 +67,14 @@ public:
 
 private:
     std::optional<double> agl(const DepthFrame& frame, const Attitude& attitude) const;
+    DataState state() const;
 
     Config config_;
     std::vector<double> ray_x_;  // 反投影查表 (u + 0.5 − cx) / fx
     std::vector<double> ray_y_;  // (v + 0.5 − cy) / fy
+    bool depth_seen_ = false;
     std::optional<Attitude> attitude_;
+    std::optional<Position> position_;
 };
 
 }  // namespace dev_board

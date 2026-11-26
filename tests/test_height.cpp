@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -362,4 +363,24 @@ TEST_CASE("height: PX4 samples are kept for 1 second") {
         REQUIRE(results.height.has_value());
         CHECK(results.height->agl.has_value());
     }
+}
+
+// 非有限值的那一筆不收：同一時間的幀改用前後兩筆內插
+TEST_CASE("height: an attitude sample that is not finite is ignored") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    core.on_attitude(attitude_at(1000, 0.0, 0.0), at(0));
+    core.on_attitude(attitude_at(1100, 0.0, 0.0), at(1));
+    core.on_position(position_at(1000), at(2));
+    core.on_position(position_at(1100), at(3));
+    Attitude bad = attitude_at(1050, 0.0, 0.0);
+    SUBCASE("roll NaN") { bad.roll = std::numeric_limits<double>::quiet_NaN(); }
+    SUBCASE("roll inf") { bad.roll = std::numeric_limits<double>::infinity(); }
+    SUBCASE("pitch NaN") { bad.pitch = std::numeric_limits<double>::quiet_NaN(); }
+    SUBCASE("pitch -inf") { bad.pitch = -std::numeric_limits<double>::infinity(); }
+    core.on_attitude(bad, at(4));
+    const Results results = core.on_depth(frame_of(config, {}, hover(7.5), 1050), at(10));
+    REQUIRE(results.height.has_value());
+    REQUIRE(results.height->agl.has_value());
+    CHECK(std::abs(*results.height->agl - 7.5) < 0.005);
 }

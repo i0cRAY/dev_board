@@ -233,6 +233,11 @@ TEST_CASE("height: a frame without attitude or position reports no_px4") {
     SUBCASE("neither") {}
     SUBCASE("no position") { core.on_attitude({0, 0.0, 0.0, 0.0}, at(0)); }
     SUBCASE("no attitude") { core.on_position({0, 0.0, 0.0, -3.0, 0.0, 0.0}, at(0)); }
+    SUBCASE("only attitudes outside +-pi") {
+        core.on_attitude({0, 4.0, 0.0, 0.0}, at(0));
+        core.on_attitude({0, 0.0, std::numeric_limits<double>::quiet_NaN(), 0.0}, at(0));
+        core.on_position({0, 0.0, 0.0, -3.0, 0.0, 0.0}, at(0));
+    }
 
     const Results results = core.on_depth(frame, at(5));
     REQUIRE(results.height.has_value());
@@ -365,8 +370,8 @@ TEST_CASE("height: PX4 samples are kept for 1 second") {
     }
 }
 
-// 不是有限值、或超過 ±π 的那一筆不收：同一時間的幀改用前後兩筆內插
-TEST_CASE("height: an attitude sample that is not a real angle is ignored") {
+// roll 或 pitch 超過 ±π（含 NaN、inf）的那一筆不收：同一時間的幀改用前後兩筆內插
+TEST_CASE("height: an attitude with roll or pitch outside +-pi or not finite is ignored") {
     const Config config = load_config(kConfigPath);
     DecisionCore core(config);
     core.on_attitude(attitude_at(1000, 0.0, 0.0), at(0));
@@ -381,9 +386,24 @@ TEST_CASE("height: an attitude sample that is not a real angle is ignored") {
     SUBCASE("roll beyond pi") { bad.roll = 4.0; }
     SUBCASE("pitch beyond -pi") { bad.pitch = -4.0; }
     SUBCASE("roll 1e308") { bad.roll = 1e308; }
+    SUBCASE("roll just past float pi") { bad.roll = 3.1416; }
     core.on_attitude(bad, at(4));
     const Results results = core.on_depth(frame_of(config, {}, hover(7.5), 1050), at(10));
     REQUIRE(results.height.has_value());
     REQUIRE(results.height->agl.has_value());
     CHECK(std::abs(*results.height->agl - 7.5) < 0.005);
+}
+
+// MAVLink ATTITUDE 是 float：最接近 π 的 float 比 double 的 π 大一點，仍然是合法的角度
+TEST_CASE("height: an attitude at +-pi in float is kept") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    const double float_pi = static_cast<double>(static_cast<float>(3.14159265358979323846));
+    REQUIRE(float_pi > 3.14159265358979323846);
+    SUBCASE("roll") { core.on_attitude({0, float_pi, 0.0, 0.0}, at(0)); }
+    SUBCASE("pitch") { core.on_attitude({0, 0.0, -float_pi, 0.0}, at(0)); }
+    core.on_position({0, 0.0, 0.0, -3.0, 0.0, 0.0}, at(0));
+    const Results results = core.on_depth(frame_of(config, {}, hover(3.0), 0), at(5));
+    REQUIRE(results.height.has_value());
+    CHECK(results.height->state == DataState::ok);
 }

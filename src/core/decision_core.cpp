@@ -12,6 +12,8 @@ namespace {
 using Vec3 = std::array<double, 3>;
 
 constexpr double kPi = 3.14159265358979323846;
+// 角度的上限多留一點：MAVLink 是 float，最接近 π 的 float 比 double 的 π 大約 9e-8
+constexpr double kMaxAngle = kPi + 1e-6;
 
 // 一個細格裡的有效點
 struct Cell {
@@ -83,7 +85,7 @@ DecisionCore::DecisionCore(const Config& config) : config_(config) {
 Results DecisionCore::on_attitude(const Attitude& attitude, Now) {
     // 不是 ±π 內的角度（含 NaN、inf）整筆不收：進到後面會變成未定義的浮點數轉整數，
     // 很大的有限值內插時也會溢位。yaw 在第一個用到的 ticket（06）一起檢查
-    if (!(std::abs(attitude.roll) <= kPi) || !(std::abs(attitude.pitch) <= kPi)) {
+    if (!(std::abs(attitude.roll) <= kMaxAngle) || !(std::abs(attitude.pitch) <= kMaxAngle)) {
         return {};
     }
     remember(attitudes_, attitude, config_.timing.px4_buffer_ms);

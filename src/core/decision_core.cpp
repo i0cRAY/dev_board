@@ -9,6 +9,8 @@
 namespace dev_board {
 namespace {
 
+using Vec3 = std::array<double, 3>;
+
 // 一個細格裡的有效點
 struct Cell {
     int valid = 0;
@@ -137,16 +139,12 @@ std::optional<double> DecisionCore::agl(const DepthFrame& frame, const Attitude&
     const double cp = std::cos(attitude.pitch);
     const double sp = std::sin(attitude.pitch);
     // 機身 FRD → 水平座標系：R = Ry(pitch)·Rx(roll)
-    const auto rotate = [&](double x, double y, double z, double& out_x, double& out_y, double& out_z) {
-        const double y1 = cr * y - sr * z;
-        const double z1 = sr * y + cr * z;
-        out_x = cp * x + sp * z1;
-        out_y = y1;
-        out_z = cp * z1 - sp * x;
+    const auto rotate = [&](const Vec3& b) -> Vec3 {
+        const double y = cr * b[1] - sr * b[2];
+        const double z = sr * b[1] + cr * b[2];
+        return {cp * b[0] + sp * z, y, cp * z - sp * b[0]};
     };
-    const std::array<double, 3>& t = config_.camera.t_cam;
-    double ox = 0.0, oy = 0.0, oz = 0.0;
-    rotate(t[0], t[1], t[2], ox, oy, oz);
+    const Vec3 o = rotate(config_.camera.t_cam);
 
     const double s = config_.grid.cell_size_m;
     const int cells = config_.zone.width_cells;
@@ -161,16 +159,15 @@ std::optional<double> DecisionCore::agl(const DepthFrame& frame, const Attitude&
             }
             const double z = mm / 1000.0;
             // 相機光學座標 → 機身 FRD：(x_b, y_b, z_b) = (−y_c, x_c, z_c)
-            double qx = 0.0, qy = 0.0, qz = 0.0;
-            rotate(-z * ray_y_[v], z * ray_x_[u], z, qx, qy, qz);
-            const int ix = static_cast<int>(std::floor((qx + ox) / s)) + half;
-            const int iy = static_cast<int>(std::floor((qy + oy) / s)) + half;
+            const Vec3 q = rotate({-z * ray_y_[v], z * ray_x_[u], z});
+            const int ix = static_cast<int>(std::floor((q[0] + o[0]) / s)) + half;
+            const int iy = static_cast<int>(std::floor((q[1] + o[1]) / s)) + half;
             if (ix < 0 || ix >= cells || iy < 0 || iy >= cells) {
                 continue;
             }
             Cell& cell = zone[static_cast<std::size_t>(ix) * cells + iy];
             ++cell.valid;
-            cell.sum_h += -qz;  // h 不加 o.z，從相機量起
+            cell.sum_h += -q[2];  // h 不加 o.z，從相機量起
         }
     }
 

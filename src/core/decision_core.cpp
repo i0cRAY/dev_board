@@ -83,7 +83,7 @@ DecisionCore::DecisionCore(const Config& config) : config_(config) {
 }
 
 Results DecisionCore::on_attitude(const Attitude& attitude, Now) {
-    // 不是 ±π 內的角度（含 NaN、inf）整筆不收：進到後面會變成未定義的浮點數轉整數，
+    // roll 或 pitch 超過 ±kMaxAngle（含 NaN、inf）整筆不收：進到後面會變成未定義的浮點數轉整數，
     // 很大的有限值內插時也會溢位。yaw 在第一個用到的 ticket（06）一起檢查
     if (!(std::abs(attitude.roll) <= kMaxAngle) || !(std::abs(attitude.pitch) <= kMaxAngle)) {
         return {};

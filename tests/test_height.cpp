@@ -370,7 +370,7 @@ TEST_CASE("height: PX4 samples are kept for 1 second") {
     }
 }
 
-// roll 或 pitch 超過 ±π（含 NaN、inf）的那一筆不收：同一時間的幀改用前後兩筆內插
+// roll 或 pitch 超過 ±(π + 1e-6)（含 NaN、inf）的那一筆不收：同一時間的幀改用前後兩筆內插
 TEST_CASE("height: an attitude with roll or pitch outside +-pi or not finite is ignored") {
     const Config config = load_config(kConfigPath);
     DecisionCore core(config);

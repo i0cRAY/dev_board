@@ -73,8 +73,8 @@ private:
     std::vector<double> ray_x_;  // 反投影查表 (u + 0.5 − cx) / fx
     std::vector<double> ray_y_;  // (v + 0.5 − cy) / fy
     bool depth_seen_ = false;
-    std::optional<Attitude> attitude_;
-    std::optional<Position> position_;
+    std::vector<Attitude> attitudes_;  // 依 time_boot_ms 排好，留最近 px4_buffer_ms
+    std::vector<Position> positions_;
 };
 
 }  // namespace dev_board

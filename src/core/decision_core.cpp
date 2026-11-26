@@ -15,6 +15,48 @@ struct Cell {
     double sum_h = 0.0;
 };
 
+// 依 sim time 排好的 PX4 緩衝，加入時丟掉比最新一筆早超過 keep_ms 的
+template <class Sample>
+void remember(std::vector<Sample>& buffer, const Sample& sample, int keep_ms) {
+    const auto later = [](const Sample& a, const Sample& b) { return a.time_boot_ms < b.time_boot_ms; };
+    buffer.insert(std::upper_bound(buffer.begin(), buffer.end(), sample, later), sample);
+    const std::int64_t oldest = static_cast<std::int64_t>(buffer.back().time_boot_ms) - keep_ms;
+    buffer.erase(buffer.begin(),
+                 std::find_if(buffer.begin(), buffer.end(), [oldest](const Sample& s) {
+                     return static_cast<std::int64_t>(s.time_boot_ms) >= oldest;
+                 }));
+}
+
+// 夾住時間 t 的前後兩筆，t = before + a·(after − before)。剛好相等時 before、after 是同一筆
+template <class Sample>
+struct Bracket {
+    const Sample* before;
+    const Sample* after;
+    double a;
+};
+
+template <class Sample>
+std::optional<Bracket<Sample>> bracket(const std::vector<Sample>& buffer, std::int64_t t) {
+    const auto after = std::find_if(buffer.begin(), buffer.end(), [t](const Sample& s) {
+        return static_cast<std::int64_t>(s.time_boot_ms) >= t;
+    });
+    if (after == buffer.end()) {
+        return std::nullopt;  // 後一筆還沒到
+    }
+    if (static_cast<std::int64_t>(after->time_boot_ms) == t) {
+        return Bracket<Sample>{&*after, &*after, 0.0};
+    }
+    if (after == buffer.begin()) {
+        return std::nullopt;  // 比緩衝區最舊的還早
+    }
+    const Sample& before = *(after - 1);
+    const double a = static_cast<double>(t - static_cast<std::int64_t>(before.time_boot_ms)) /
+                     static_cast<double>(after->time_boot_ms - before.time_boot_ms);
+    return Bracket<Sample>{&before, &*after, a};
+}
+
+double lerp(double from, double to, double a) { return from + a * (to - from); }
+
 // 偶數個時取中間兩個的平均（§6.1）
 double median(std::vector<double> values) {
     std::sort(values.begin(), values.end());
@@ -35,12 +77,12 @@ DecisionCore::DecisionCore(const Config& config) : config_(config) {
 }
 
 Results DecisionCore::on_attitude(const Attitude& attitude, Now) {
-    attitude_ = attitude;
+    remember(attitudes_, attitude, config_.timing.px4_buffer_ms);
     return {};
 }
 
 Results DecisionCore::on_position(const Position& position, Now) {
-    position_ = position;
+    remember(positions_, position, config_.timing.px4_buffer_ms);
     return {};
 }
 
@@ -57,7 +99,16 @@ Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
     if (now_state != DataState::ok) {
         return {Height{std::nullopt, now_state}};
     }
-    return {Height{agl(frame, *attitude_), DataState::ok}};
+    // 03 只用到 roll、pitch；位置要夾得住才算能用。yaw、位置、速度的內插在第一個用到的 ticket 做
+    const std::int64_t t = static_cast<std::int64_t>(frame.timestamp_ms);
+    const auto attitude = bracket(attitudes_, t);
+    if (!attitude || !bracket(positions_, t)) {
+        return {};
+    }
+    Attitude at_frame = *attitude->before;
+    at_frame.roll = lerp(attitude->before->roll, attitude->after->roll, attitude->a);
+    at_frame.pitch = lerp(attitude->before->pitch, attitude->after->pitch, attitude->a);
+    return {Height{agl(frame, at_frame), DataState::ok}};
 }
 
 Results DecisionCore::on_tick(Now) {
@@ -73,7 +124,7 @@ DataState DecisionCore::state() const {
     if (!depth_seen_) {
         return DataState::no_depth;
     }
-    if (!attitude_ || !position_) {
+    if (attitudes_.empty() || positions_.empty()) {
         return DataState::no_px4;
     }
     return DataState::ok;

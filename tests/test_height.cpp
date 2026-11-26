@@ -240,3 +240,96 @@ TEST_CASE("height: a tick with depth and PX4 present returns nothing") {
     REQUIRE(core.on_depth(frame_of(config, {}, hover(3.0), 0), at(5)).height.has_value());
     CHECK_FALSE(core.on_tick(at(10)).height.has_value());
 }
+
+namespace {
+
+// 7.5 m 高，Z 在四面 1 m 高的台圍起來的 1.2 × 1.2 m 地面上。姿態差 5° 時點的水平位置
+// 差約 0.65 m，台上的點就落進 Z，agl 不再是 7.5 m
+Scene well() {
+    Scene scene;
+    scene.blocks = {{{0.6, 10.0, -10.0, 10.0}, 1.0},
+                    {{-10.0, -0.6, -10.0, 10.0}, 1.0},
+                    {{-0.6, 0.6, 0.6, 10.0}, 1.0},
+                    {{-0.6, 0.6, -10.0, -0.6}, 1.0}};
+    return scene;
+}
+
+Attitude attitude_at(std::uint32_t ms, double roll_deg, double pitch_deg) {
+    return {ms, roll_deg * kDegree, pitch_deg * kDegree, 0.0};
+}
+
+Position position_at(std::uint32_t ms) { return {ms, 0.0, 0.0, -7.5, 0.0, 0.0}; }
+
+}  // namespace
+
+TEST_CASE("height: attitude is interpolated to the frame's sim time") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    SUBCASE("in order") {
+        core.on_attitude(attitude_at(1000, -12.0, 12.0), at(0));
+        core.on_attitude(attitude_at(1100, 12.0, -12.0), at(1));
+    }
+    SUBCASE("arriving out of order") {
+        core.on_attitude(attitude_at(1100, 12.0, -12.0), at(0));
+        core.on_attitude(attitude_at(1000, -12.0, 12.0), at(1));
+    }
+    core.on_position(position_at(1000), at(2));
+    core.on_position(position_at(1100), at(3));
+
+    // 1/4 的地方：roll −6°、pitch 6°。用錯任何一筆、或從另一頭算，都差 6° 以上
+    Pose pose = hover(7.5);
+    pose.roll = -6.0 * kDegree;
+    pose.pitch = 6.0 * kDegree;
+    const Results results = core.on_depth(frame_of(config, well(), pose, 1025), at(10));
+    REQUIRE(results.height.has_value());
+    REQUIRE(results.height->agl.has_value());
+    CHECK(std::abs(*results.height->agl - 7.5) < 0.005);
+}
+
+TEST_CASE("height: a frame at the same time as the later PX4 sample uses it") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    core.on_attitude(attitude_at(1000, -5.0, -5.0), at(0));
+    core.on_attitude(attitude_at(1100, 5.0, 5.0), at(1));
+    core.on_position(position_at(1000), at(2));
+    core.on_position(position_at(1100), at(3));
+    Pose pose = hover(7.5);
+    pose.roll = 5.0 * kDegree;
+    pose.pitch = 5.0 * kDegree;
+    const Results results = core.on_depth(frame_of(config, well(), pose, 1100), at(10));
+    REQUIRE(results.height.has_value());
+    REQUIRE(results.height->agl.has_value());
+    CHECK(std::abs(*results.height->agl - 7.5) < 0.005);
+}
+
+TEST_CASE("height: a frame newer than the last attitude or position gives no height yet") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    core.on_attitude(attitude_at(1000, 0.0, 0.0), at(0));
+    core.on_position(position_at(1000), at(1));
+    SUBCASE("attitude behind") { core.on_position(position_at(1100), at(2)); }
+    SUBCASE("position behind") { core.on_attitude(attitude_at(1100, 0.0, 0.0), at(2)); }
+    CHECK_FALSE(core.on_depth(frame_of(config, {}, hover(7.5), 1050), at(10)).height.has_value());
+}
+
+// 每 100 ms 一筆，最新的是 1200 ms：只留 200 ms 以後的
+TEST_CASE("height: PX4 samples are kept for 1 second") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    for (std::uint32_t ms = 0; ms <= 1200; ms += 100) {
+        core.on_attitude(attitude_at(ms, 0.0, 0.0), at(static_cast<int>(ms)));
+        core.on_position(position_at(ms), at(static_cast<int>(ms)));
+    }
+    SUBCASE("attitude and position both kept") {
+        const Results results = core.on_depth(frame_of(config, {}, hover(7.5), 250), at(1210));
+        REQUIRE(results.height.has_value());
+        CHECK(results.height->agl.has_value());
+    }
+    SUBCASE("older than the buffer") {
+        CHECK_FALSE(core.on_depth(frame_of(config, {}, hover(7.5), 150), at(1210)).height.has_value());
+    }
+    SUBCASE("only the position is older than the buffer") {
+        core.on_attitude(attitude_at(100, 0.0, 0.0), at(1205));
+        CHECK_FALSE(core.on_depth(frame_of(config, {}, hover(7.5), 150), at(1210)).height.has_value());
+    }
+}

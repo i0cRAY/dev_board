@@ -153,20 +153,24 @@ Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
     if (now_state != DataState::ok) {
         return {Height{std::nullopt, now_state}, {}};
     }
-    // 03 只用到 roll、pitch；位置要夾得住才算能用。yaw、位置、速度的內插在第一個用到的 ticket 做
+    // 用到 roll、pitch、vx、vy；位置要夾得住才算能用。yaw 和 north、east、down 的內插在 06 做
     const std::int64_t t = static_cast<std::int64_t>(frame.timestamp_ms);
     const auto attitude = bracket(attitudes_, t);
-    if (!attitude || !bracket(positions_, t)) {
+    const auto position = bracket(positions_, t);
+    if (!attitude || !position) {
         return {};
     }
     Attitude at_frame = *attitude->before;
     at_frame.roll = lerp(attitude->before->roll, attitude->after->roll, attitude->a);
     at_frame.pitch = lerp(attitude->before->pitch, attitude->after->pitch, attitude->a);
+    Position moving_at = *position->before;
+    moving_at.vx_mps = lerp(position->before->vx_mps, position->after->vx_mps, position->a);
+    moving_at.vy_mps = lerp(position->before->vy_mps, position->after->vy_mps, position->a);
     const terrain::Grid grid = project(frame, at_frame);
     const std::optional<double> height = terrain::agl(grid, config_.zone.width_cells);
     std::optional<DropCheck> check;
     if (check_) {
-        check = collect(frame, terrain::evaluate(grid, config_));
+        check = collect(frame, check_frame(grid, at_frame, moving_at));
     }
     return {Height{height, DataState::ok}, check};
 }
@@ -174,6 +178,19 @@ Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
 Results DecisionCore::on_check_request(const CheckRequest& request, Now) {
     check_ = PendingCheck{request.request_id, {}};
     return {};
+}
+
+// §7 每幀一個結果：依序檢查，第一個成立的就是這一幀的原因
+std::optional<CheckReason> DecisionCore::check_frame(const terrain::Grid& grid, const Attitude& attitude,
+                                                     const Position& position) const {
+    const double tilt = std::acos(std::cos(attitude.roll) * std::cos(attitude.pitch));
+    if (tilt > config_.limits.max_tilt_deg * kDegree) {
+        return CheckReason::tilted;
+    }
+    if (std::hypot(position.vx_mps, position.vy_mps) > config_.drop_check.max_speed_mps) {
+        return CheckReason::moving;
+    }
+    return terrain::evaluate(grid, config_);
 }
 
 // 收進確認中的一幀；同一個 frame_id 只算一次。收滿時照 §7 合併

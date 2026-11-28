@@ -56,18 +56,24 @@ std::string name(const std::optional<CheckReason>& reason) {
         case CheckReason::rough: return "rough";
         case CheckReason::slope: return "slope";
         case CheckReason::invalid_depth: return "invalid_depth";
+        case CheckReason::too_low: return "too_low";
+        case CheckReason::too_high: return "too_high";
+        case CheckReason::tilted: return "tilted";
+        case CheckReason::moving: return "moving";
+        case CheckReason::no_depth: return "no_depth";
     }
     return "?";
 }
 
 // 按「確認」後依序送 depths 的每一張（frame_id 1、2、…，sim time 100、200、… ms），回傳最後一幀產生的結果。
-// 前面的幀不能有結果
+// 前面的幀不能有結果。vx、vy 是 PX4 的水平速度（北、東）
 std::optional<DropCheck> drop_check(const Config& config, const Pose& pose,
-                                    const std::vector<std::vector<std::uint16_t>>& depths) {
+                                    const std::vector<std::vector<std::uint16_t>>& depths, double vx = 0.0,
+                                    double vy = 0.0) {
     DecisionCore core(config);
     for (const std::uint32_t t : {0u, 1000u}) {
         core.on_attitude({t, pose.roll, pose.pitch, pose.yaw}, at(0));
-        core.on_position({t, pose.north_m, pose.east_m, pose.down_m, 0.0, 0.0}, at(0));
+        core.on_position({t, pose.north_m, pose.east_m, pose.down_m, vx, vy}, at(0));
     }
     core.on_check_request({7}, at(0));
     std::optional<DropCheck> result;
@@ -167,6 +173,83 @@ TEST_CASE("drop check: flat level ground passes") {
     }
 }
 
+
+// 傾角 = acos(cos(roll)·cos(pitch))，門檻 5°（§7）
+TEST_CASE("drop check: tilted more than the limit") {
+    const Config config = load_config(kConfigPath);
+    Pose pose = hover(3.0);
+    SUBCASE("roll 6 degrees") {
+        pose.roll = 6.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "tilted");
+    }
+    SUBCASE("roll 4 and pitch 4 degrees tilt 5.66 degrees") {
+        pose.roll = 4.0 * kDegree;
+        pose.pitch = 4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "tilted");
+    }
+    SUBCASE("roll 4 degrees passes") {
+        pose.roll = 4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "ok");
+    }
+}
+
+// 水平速度 hypot(vx, vy)，門檻 0.3 m/s（§7）
+TEST_CASE("drop check: moving faster than the limit") {
+    const Config config = load_config(kConfigPath);
+    const Pose pose = hover(3.0);
+    const std::vector<std::vector<std::uint16_t>> flat(
+        static_cast<std::size_t>(config.drop_check.frames), synthetic::synthesize_depth({}, config.camera, pose));
+    SUBCASE("1 m/s north is moving") {
+        CHECK(verdict_of(config, drop_check(config, pose, flat, 1.0, 0.0)) == "moving");
+    }
+    SUBCASE("1 m/s east is moving") {
+        CHECK(verdict_of(config, drop_check(config, pose, flat, 0.0, 1.0)) == "moving");
+    }
+    SUBCASE("0.25 m/s north and 0.25 m/s east is 0.35 m/s, moving") {
+        CHECK(verdict_of(config, drop_check(config, pose, flat, 0.25, 0.25)) == "moving");
+    }
+    SUBCASE("0 passes") { CHECK(verdict_of(config, drop_check(config, pose, flat, 0.0, 0.0)) == "ok"); }
+}
+
+// PX4 的速度內插到幀時間：sim time 0 → 1000 ms 從 0 加速到 0.55 m/s，第 k 幀（k·100 ms）是 0.055·k m/s
+TEST_CASE("drop check: the speed of each frame is interpolated to the frame time") {
+    const Config config = load_config(kConfigPath);
+    const Pose pose = hover(3.0);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, pose);
+    double vx = 0.0;
+    double vy = 0.0;
+    SUBCASE("north") { vx = 0.55; }
+    SUBCASE("east") { vy = 0.55; }
+    DecisionCore core(config);
+    core.on_attitude({0, 0.0, 0.0, 0.0}, at(0));
+    core.on_attitude({1000, 0.0, 0.0, 0.0}, at(0));
+    core.on_position({0, 0.0, 0.0, pose.down_m, 0.0, 0.0}, at(0));
+    core.on_position({1000, 0.0, 0.0, pose.down_m, vx, vy}, at(0));
+    core.on_check_request({3}, at(0));
+    std::optional<DropCheck> result;
+    for (std::uint32_t id = 1; id <= 10; ++id) {
+        result = core.on_depth({id, 100u * id, config.camera.depth.width, config.camera.depth.height, flat}, at(0))
+                     .drop_check;
+    }
+    REQUIRE(result.has_value());
+    REQUIRE(result->frames.size() == 10);
+    for (std::size_t i = 0; i < 10; ++i) {
+        CAPTURE(i);
+        CHECK(name(result->frames[i].reason) == std::string(i < 5 ? "ok" : "moving"));
+    }
+}
+
+// 一幀依序檢查 tilted → moving → too_high／too_low → evaluate，第一個成立的就是這一幀的原因（§7）
+TEST_CASE("drop check: each frame reports the first check that fails") {
+    const Config config = load_config(kConfigPath);
+    SUBCASE("tilted and moving is tilted") {
+        Pose pose = hover(3.0);
+        pose.roll = 6.0 * kDegree;
+        const std::vector<std::vector<std::uint16_t>> flat(
+            static_cast<std::size_t>(config.drop_check.frames), synthetic::synthesize_depth({}, config.camera, pose));
+        CHECK(verdict_of(config, drop_check(config, pose, flat, 1.0, 0.0)) == "tilted");
+    }
+}
 
 // 0.5 × 0.5 m 的坑對齊細格，在 Z 正中央的 2×2 格
 TEST_CASE("drop check: a pit in the middle of Z") {

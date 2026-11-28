@@ -58,8 +58,9 @@ struct CheckRequest {
     std::uint32_t request_id;
 };
 
-// §7 drop_check 不合格的原因，依平手時的優先順序排。04 只做地面判斷，飛行狀態的原因在 05
-enum class CheckReason { hole, rough, slope, invalid_depth };
+// §7 drop_check 不合格的原因。hole～moving 是一幀的原因，依平手時的優先順序排；
+// no_depth 只會是整個確認的原因（1.5 秒內收不滿幀）
+enum class CheckReason { hole, rough, slope, invalid_depth, too_low, too_high, tilted, moving, no_depth };
 
 // 一幀的判斷（診斷資料，不進 JSON）
 struct FrameCheck {
@@ -101,6 +102,9 @@ private:
     // §5 第 3～7 步：把一幀放進正下方的細格
     terrain::Grid project(const DepthFrame& frame, const Attitude& attitude) const;
     DataState state() const;
+    // 一幀的姿態、速度都是內插到幀時間的值
+    std::optional<CheckReason> check_frame(const terrain::Grid& grid, const Attitude& attitude,
+                                           const Position& position) const;
     std::optional<DropCheck> collect(const DepthFrame& frame, std::optional<CheckReason> reason);
 
     // 收幀中的確認

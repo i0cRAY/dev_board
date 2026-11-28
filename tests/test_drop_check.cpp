@@ -648,6 +648,107 @@ TEST_CASE("drop check: a second request while frames are being collected") {
     }
 }
 
+// 深度 5 FPS：請求後 200、400、…、1400 ms 收到 7 幀（前 2 幀是坑），1.5 秒（本機時鐘）收不滿 10 幀
+TEST_CASE("drop check: not enough frames within 1.5 s is no_depth") {
+    const Config config = load_config(kConfigPath);
+    const Pose pose = hover(3.0);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, pose);
+    Scene pit;
+    pit.pits.push_back(centre_pit(0.5));
+    const std::vector<std::uint16_t> hole = synthetic::synthesize_depth(pit, config.camera, pose);
+    DecisionCore core(config);
+    core.on_check_request({4}, at(0));
+    for (std::uint32_t id = 1; id <= 7; ++id) {
+        const Now now = at(200 * static_cast<int>(id));
+        core.on_attitude({200 * id, 0.0, 0.0, 0.0}, now);
+        core.on_position({200 * id, 0.0, 0.0, pose.down_m, 0.0, 0.0}, now);
+        const DepthFrame frame{id, 200u * id, config.camera.depth.width, config.camera.depth.height,
+                               id <= 2 ? hole : flat};
+        REQUIRE_FALSE(core.on_depth(frame, now).drop_check.has_value());
+    }
+    CHECK_FALSE(core.on_tick(at(1499)).drop_check.has_value());
+
+    const std::optional<DropCheck> result = core.on_tick(at(1500)).drop_check;
+    REQUIRE(result.has_value());
+    CHECK(result->request_id == 4);
+    CHECK_FALSE(result->ok);
+    CHECK(name(result->reason) == "no_depth");
+    CHECK(result->counts == std::map<CheckReason, int>{{CheckReason::hole, 2}});
+    CHECK(result->frame_timestamp == 1400);
+    CHECK(result->frames.size() == 7);
+}
+
+// §9.2：從沒收過深度幀時 frame_timestamp 是空的
+TEST_CASE("drop check: no depth frame at all is no_depth without a frame_timestamp") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    core.on_check_request({1}, at(0));
+    const std::optional<DropCheck> result = core.on_tick(at(1500)).drop_check;
+    REQUIRE(result.has_value());
+    CHECK(name(result->reason) == "no_depth");
+    CHECK_FALSE(result->frame_timestamp.has_value());
+    CHECK(result->counts.empty());
+    CHECK(result->frames.empty());
+}
+
+// 還沒收過 PX4 時深度幀不能用，期限到了一樣回 no_depth
+TEST_CASE("drop check: a frame without PX4 data still answers no_depth once 1.5 s have passed") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    core.on_check_request({1}, at(0));
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, hover(3.0));
+    const Results results =
+        core.on_depth({1, 100, config.camera.depth.width, config.camera.depth.height, flat}, at(1500));
+    REQUIRE(results.drop_check.has_value());
+    CHECK(name(results.drop_check->reason) == "no_depth");
+}
+
+// 1.5 秒的期限每個事件都檢查：請求後 100～900 ms 收到 9 幀，1.5 秒時的第一個事件就回 no_depth
+TEST_CASE("drop check: every event answers no_depth once 1.5 s have passed") {
+    const Config config = load_config(kConfigPath);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, hover(3.0));
+    DecisionCore core(config);
+    core.on_check_request({6}, at(0));
+    for (std::uint32_t id = 1; id <= 9; ++id) {
+        const Now now = at(100 * static_cast<int>(id));
+        core.on_attitude({100 * id, 0.0, 0.0, 0.0}, now);
+        core.on_position({100 * id, 0.0, 0.0, -3.0, 0.0, 0.0}, now);
+        REQUIRE_FALSE(core.on_depth({id, 100u * id, config.camera.depth.width, config.camera.depth.height, flat}, now)
+                          .drop_check.has_value());
+    }
+    Results results;
+    SUBCASE("a 10th frame that arrives at 1.5 s does not count") {
+        core.on_attitude({1000, 0.0, 0.0, 0.0}, at(1000));
+        core.on_position({1000, 0.0, 0.0, -3.0, 0.0, 0.0}, at(1000));
+        results = core.on_depth({10, 1000, config.camera.depth.width, config.camera.depth.height, flat}, at(1500));
+    }
+    SUBCASE("attitude") { results = core.on_attitude({1000, 0.0, 0.0, 0.0}, at(1500)); }
+    SUBCASE("an attitude that is not accepted") { results = core.on_attitude({1000, 1e9, 0.0, 0.0}, at(1500)); }
+    SUBCASE("a frame whose time cannot be interpolated") {
+        results = core.on_depth({10, 5000, config.camera.depth.width, config.camera.depth.height, flat}, at(1500));
+    }
+    SUBCASE("position") { results = core.on_position({1000, 0.0, 0.0, -3.0, 0.0, 0.0}, at(1500)); }
+    SUBCASE("a check request with a smaller request_id") {
+        results = core.on_check_request({2}, at(1500));
+        // 舊的已經到期，新的照常開始收幀
+        std::optional<DropCheck> next;
+        for (std::uint32_t id = 10; id <= 19; ++id) {
+            core.on_attitude({100 * id, 0.0, 0.0, 0.0}, at(1500));
+            core.on_position({100 * id, 0.0, 0.0, -3.0, 0.0, 0.0}, at(1500));
+            next = core.on_depth({id, 100u * id, config.camera.depth.width, config.camera.depth.height, flat}, at(1500))
+                       .drop_check;
+        }
+        REQUIRE(next.has_value());
+        CHECK(next->request_id == 2);
+        CHECK(next->ok);
+    }
+    REQUIRE(results.drop_check.has_value());
+    CHECK(results.drop_check->request_id == 6);
+    CHECK(name(results.drop_check->reason) == "no_depth");
+    CHECK(results.drop_check->frames.size() == 9);
+    CHECK(results.drop_check->counts.empty());
+}
+
 TEST_CASE("drop check: when every frame fails the same way, counts has that reason for all frames") {
     const Config config = load_config(kConfigPath);
     Scene scene;

@@ -71,7 +71,7 @@ struct FrameCheck {
 // §9.2 `drop_check` 的 payload，另外附每一幀的判斷
 struct DropCheck {
     std::uint32_t request_id;
-    std::uint64_t frame_timestamp;          // 最後一幀的 sim time
+    std::optional<std::uint64_t> frame_timestamp;  // 最後一幀的 sim time；從沒收過深度幀是空的
     bool ok;
     std::optional<CheckReason> reason;      // 合格時是空的
     std::map<CheckReason, int> counts;      // 只列出現過的原因；合格時是空的
@@ -85,6 +85,7 @@ struct Results {
 };
 
 // 判斷核心：餵事件，拿結果。不開執行緒、不讀時鐘、不碰網路，也不保證可以多執行緒同時呼叫。
+// 每個事件先檢查確認的期限（drop_check.max_wait_ms，從收到請求的 now 算起），到了就在這個事件的結果回 no_depth
 class DecisionCore {
 public:
     explicit DecisionCore(const Config& config);
@@ -109,10 +110,13 @@ private:
                                            const Attitude& attitude, const Position& position) const;
     bool sees_zone_and_ring(double agl, const Attitude& attitude) const;
     std::optional<DropCheck> collect(const DepthFrame& frame, std::optional<CheckReason> reason);
+    // 確認等到期限還沒收滿：回 no_depth，counts 是已收的幀（§7）
+    std::optional<DropCheck> expire(Now now);
 
     // 收幀中的確認
     struct PendingCheck {
         std::uint32_t request_id;
+        Now deadline;
         std::vector<FrameCheck> frames;
     };
 
@@ -120,6 +124,7 @@ private:
     std::vector<double> ray_x_;  // 反投影查表 (u + 0.5 − cx) / fx
     std::vector<double> ray_y_;  // (v + 0.5 − cy) / fy
     bool depth_seen_ = false;
+    std::optional<std::uint64_t> last_frame_timestamp_;  // 最後收到的深度幀的 sim time
     std::vector<Attitude> attitudes_;  // 依 time_boot_ms 排好，留最近 px4_buffer_ms
     std::vector<Position> positions_;
     std::optional<PendingCheck> check_;

@@ -239,6 +239,82 @@ TEST_CASE("drop check: the speed of each frame is interpolated to the frame time
     }
 }
 
+// agl > drop_max_height（5 m）是 too_high；量不到 agl 時跳過這一步（§7）
+TEST_CASE("drop check: height above flat ground") {
+    const Config config = load_config(kConfigPath);
+    SUBCASE("3 m passes") { CHECK(verdict(config, {}, hover(3.0)) == "ok"); }
+    SUBCASE("5 m passes") { CHECK(verdict(config, {}, hover(5.0)) == "ok"); }
+    SUBCASE("7.5 m is too_high") { CHECK(verdict(config, {}, hover(7.5)) == "too_high"); }
+    SUBCASE("12 m is too_high") { CHECK(verdict(config, {}, hover(12.0)) == "too_high"); }
+    SUBCASE("18 m is too_high") { CHECK(verdict(config, {}, hover(18.0)) == "too_high"); }
+    SUBCASE("25 m is beyond the camera, invalid_depth") { CHECK(verdict(config, {}, hover(25.0)) == "invalid_depth"); }
+}
+
+// Z＋外圈的四個角 (±1.25, ±1.25) m 投影到深度影像，有任何一個在畫面外就是 too_low（§7）。
+// vfov/2 ≈ 35.4°：水平時約 1.76 m 以上前後兩個角才在畫面裡；pitch 4° 時約 2.05 m；
+// 相機往前 0.3 m 時後面的角離相機 1.55 m，約 2.18 m
+TEST_CASE("drop check: too low to see all of Z and its ring") {
+    const Config config = load_config(kConfigPath);
+    Pose pose;
+    SUBCASE("pitch 4 degrees at 1.5 m is too_low") {
+        pose = hover(1.5);
+        pose.pitch = 4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "too_low");
+    }
+    SUBCASE("pitch 4 degrees at 2.5 m passes") {
+        pose = hover(2.5);
+        pose.pitch = 4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "ok");
+    }
+    SUBCASE("1.9 m passes level and is too_low at pitch 4 degrees") {
+        pose = hover(1.9);
+        CHECK(verdict(config, {}, pose) == "ok");
+        pose.pitch = 4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "too_low");
+    }
+    SUBCASE("1.9 m is too_low at pitch -4 degrees") {
+        pose = hover(1.9);
+        pose.pitch = -4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "too_low");
+    }
+    SUBCASE("2 m passes with the camera at the centre and is too_low with it 0.3 m forward") {
+        pose = hover(2.0);
+        CHECK(verdict(config, {}, pose) == "ok");
+        Config forward = config;
+        forward.camera.t_cam = {0.3, 0.0, 0.0};
+        CHECK(verdict(forward, {}, pose) == "too_low");
+    }
+    // 相機往前 0.3 m，後面的角離相機 1.55 m。抬頭（pitch > 0）時相機往前看，後面的角更偏
+    SUBCASE("camera 0.3 m forward at 2.3 m: pitch -4 degrees passes, pitch 4 degrees is too_low") {
+        Config forward = config;
+        forward.camera.t_cam = {0.3, 0.0, 0.0};
+        pose = hover(2.3);
+        pose.pitch = -4.0 * kDegree;
+        CHECK(verdict(forward, {}, pose) == "ok");
+        pose.pitch = 4.0 * kDegree;
+        CHECK(verdict(forward, {}, pose) == "too_low");
+    }
+    // 相機往右 0.6 m，左邊的角離相機 1.85 m（hfov/2 ≈ 43.5°）。右邊往下（roll > 0）時機腹朝左，相機往左看
+    SUBCASE("camera 0.6 m right at 2.1 m: roll 4 degrees passes, roll -4 degrees is too_low") {
+        Config right = config;
+        right.camera.t_cam = {0.0, 0.6, 0.0};
+        pose = hover(2.1);
+        pose.roll = 4.0 * kDegree;
+        CHECK(verdict(right, {}, pose) == "ok");
+        pose.roll = -4.0 * kDegree;
+        CHECK(verdict(right, {}, pose) == "too_low");
+    }
+}
+
+// 視野夠寬時四個角在 0.2 m 也看得到，仍因為 agl < 0.3 m 是 too_low
+TEST_CASE("drop check: closer than the minimum distance is too_low") {
+    Config config = load_config(kConfigPath);
+    config.camera.depth.fx = config.camera.depth.fy = 8.0;
+    config.camera.rgb.fx = config.camera.rgb.fy = 32.0;
+    SUBCASE("0.2 m is too_low") { CHECK(verdict(config, {}, hover(0.2)) == "too_low"); }
+    SUBCASE("0.5 m passes") { CHECK(verdict(config, {}, hover(0.5)) == "ok"); }
+}
+
 // 一幀依序檢查 tilted → moving → too_high／too_low → evaluate，第一個成立的就是這一幀的原因（§7）
 TEST_CASE("drop check: each frame reports the first check that fails") {
     const Config config = load_config(kConfigPath);
@@ -248,6 +324,12 @@ TEST_CASE("drop check: each frame reports the first check that fails") {
         const std::vector<std::vector<std::uint16_t>> flat(
             static_cast<std::size_t>(config.drop_check.frames), synthetic::synthesize_depth({}, config.camera, pose));
         CHECK(verdict_of(config, drop_check(config, pose, flat, 1.0, 0.0)) == "tilted");
+    }
+    SUBCASE("moving and too high is moving") {
+        const Pose pose = hover(7.5);
+        const std::vector<std::vector<std::uint16_t>> flat(
+            static_cast<std::size_t>(config.drop_check.frames), synthetic::synthesize_depth({}, config.camera, pose));
+        CHECK(verdict_of(config, drop_check(config, pose, flat, 1.0, 0.0)) == "moving");
     }
 }
 
@@ -582,9 +664,11 @@ TEST_CASE("drop check: cells with more than half of their pixels invalid are UNK
     CHECK(verdict(config, hover(3.0), depth) == "hole");
 }
 
-// 10.5 m 高時每格 2 × 2 個像素。2×2 格每格改 2 個成 0：剩 2 個有效點，無效比例剛好 50%
+// 10.5 m 高時每格 2 × 2 個像素。2×2 格每格改 2 個成 0：剩 2 個有效點，無效比例剛好 50%。
+// 高度只是為了每格的像素少，投放高度上限放寬到 11 m，才不會先判 too_high
 TEST_CASE("drop check: cells with fewer than 3 valid points are UNKNOWN") {
-    const Config config = load_config(kConfigPath);
+    Config config = load_config(kConfigPath);
+    config.drop_check.drop_max_height_m = 11.0;
     std::vector<std::uint16_t> depth = synthetic::synthesize_depth({}, config.camera, hover(10.5));
     for (const auto& [ix, iy] : {std::pair{0, 0}, {0, 1}, {1, 0}, {1, 1}}) {
         const std::vector<std::size_t> pixels = pixels_in(config, 10.5, ix, iy);

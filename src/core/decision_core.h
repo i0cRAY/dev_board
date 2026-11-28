@@ -102,9 +102,10 @@ private:
     // §5 第 3～7 步：把一幀放進正下方的細格
     terrain::Grid project(const DepthFrame& frame, const Attitude& attitude) const;
     DataState state() const;
-    // 一幀的姿態、速度都是內插到幀時間的值
-    std::optional<CheckReason> check_frame(const terrain::Grid& grid, const Attitude& attitude,
-                                           const Position& position) const;
+    // 一幀的 agl（量不到是空的），姿態、速度都是內插到幀時間的值
+    std::optional<CheckReason> check_frame(const terrain::Grid& grid, std::optional<double> agl,
+                                           const Attitude& attitude, const Position& position) const;
+    bool sees_zone_and_ring(double agl, const Attitude& attitude) const;
     std::optional<DropCheck> collect(const DepthFrame& frame, std::optional<CheckReason> reason);
 
     // 收幀中的確認

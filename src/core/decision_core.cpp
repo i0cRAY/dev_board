@@ -59,21 +59,42 @@ std::optional<Bracket<Sample>> bracket(const std::vector<Sample>& buffer, std::i
 
 double lerp(double from, double to, double a) { return from + a * (to - from); }
 
+// 機身 FRD ↔ 水平座標系：R = Ry(pitch)·Rx(roll)，不含 yaw（§5 第 5 步）
+class Tilt {
+public:
+    explicit Tilt(const Attitude& attitude)
+        : cr_(std::cos(attitude.roll)),
+          sr_(std::sin(attitude.roll)),
+          cp_(std::cos(attitude.pitch)),
+          sp_(std::sin(attitude.pitch)) {}
+
+    // R·b
+    Vec3 to_horizontal(const Vec3& b) const {
+        const double y = cr_ * b[1] - sr_ * b[2];
+        const double z = sr_ * b[1] + cr_ * b[2];
+        return {cp_ * b[0] + sp_ * z, y, cp_ * z - sp_ * b[0]};
+    }
+    // Rᵀ·h
+    Vec3 to_body(const Vec3& h) const {
+        const double x = cp_ * h[0] - sp_ * h[2];
+        const double z = sp_ * h[0] + cp_ * h[2];
+        return {x, cr_ * h[1] + sr_ * z, cr_ * z - sr_ * h[1]};
+    }
+
+private:
+    double cr_;
+    double sr_;
+    double cp_;
+    double sp_;
+};
+
 }  // namespace
 
 // §5 第 3～7 步：把每個有效點放進細格，無效像素沿射線打到中位數高度的水平面，算進落點那格的無效數。
 // 細格涵蓋 Z、外圈和外圈外面一格
 terrain::Grid DecisionCore::project(const DepthFrame& frame, const Attitude& attitude) const {
-    const double cr = std::cos(attitude.roll);
-    const double sr = std::sin(attitude.roll);
-    const double cp = std::cos(attitude.pitch);
-    const double sp = std::sin(attitude.pitch);
-    // 機身 FRD → 水平座標系：R = Ry(pitch)·Rx(roll)
-    const auto rotate = [&](const Vec3& b) -> Vec3 {
-        const double y = cr * b[1] - sr * b[2];
-        const double z = sr * b[1] + cr * b[2];
-        return {cp * b[0] + sp * z, y, cp * z - sp * b[0]};
-    };
+    const Tilt tilt(attitude);
+    const auto rotate = [&](const Vec3& b) { return tilt.to_horizontal(b); };
     const Vec3 o = rotate(config_.camera.t_cam);
 
     terrain::Grid grid(config_.zone.width_cells / 2 + config_.zone.ring_cells + 1, config_.grid.cell_size_m);
@@ -170,7 +191,7 @@ Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
     const std::optional<double> height = terrain::agl(grid, config_.zone.width_cells);
     std::optional<DropCheck> check;
     if (check_) {
-        check = collect(frame, check_frame(grid, at_frame, moving_at));
+        check = collect(frame, check_frame(grid, height, at_frame, moving_at));
     }
     return {Height{height, DataState::ok}, check};
 }
@@ -181,8 +202,8 @@ Results DecisionCore::on_check_request(const CheckRequest& request, Now) {
 }
 
 // §7 每幀一個結果：依序檢查，第一個成立的就是這一幀的原因
-std::optional<CheckReason> DecisionCore::check_frame(const terrain::Grid& grid, const Attitude& attitude,
-                                                     const Position& position) const {
+std::optional<CheckReason> DecisionCore::check_frame(const terrain::Grid& grid, std::optional<double> agl,
+                                                     const Attitude& attitude, const Position& position) const {
     const double tilt = std::acos(std::cos(attitude.roll) * std::cos(attitude.pitch));
     if (tilt > config_.limits.max_tilt_deg * kDegree) {
         return CheckReason::tilted;
@@ -190,7 +211,33 @@ std::optional<CheckReason> DecisionCore::check_frame(const terrain::Grid& grid, 
     if (std::hypot(position.vx_mps, position.vy_mps) > config_.drop_check.max_speed_mps) {
         return CheckReason::moving;
     }
+    if (agl && *agl > config_.drop_check.drop_max_height_m) {
+        return CheckReason::too_high;
+    }
+    if (agl && (*agl < config_.limits.min_distance_m || !sees_zone_and_ring(*agl, attitude))) {
+        return CheckReason::too_low;
+    }
     return terrain::evaluate(grid, config_);
+}
+
+// Z＋外圈的四個角 (±(Zw/2 + r), ±(Zw/2 + r))、深度 agl，用 §8.5 的公式投影到深度影像，都要在畫面裡（§7）
+bool DecisionCore::sees_zone_and_ring(double agl, const Attitude& attitude) const {
+    const Tilt tilt(attitude);
+    const Vec3 o = tilt.to_horizontal(config_.camera.t_cam);
+    const Intrinsics& k = config_.camera.depth;
+    const double a = config_.zone.width_m / 2.0 + config_.zone.ring_width_m;
+    for (const double x : {-a, a}) {
+        for (const double y : {-a, a}) {
+            const Vec3 b = tilt.to_body({x - o[0], y - o[1], agl});
+            // 機身 FRD → 相機光學座標：(x_c, y_c, z_c) = (y_b, −x_b, z_b)
+            const double u = k.fx * b[1] / b[2] + k.cx;
+            const double v = k.fy * -b[0] / b[2] + k.cy;
+            if (!(b[2] > 0.0 && u >= 0.0 && u < k.width && v >= 0.0 && v < k.height)) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 // 收進確認中的一幀；同一個 frame_id 只算一次。收滿時照 §7 合併

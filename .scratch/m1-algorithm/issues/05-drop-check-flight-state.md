@@ -21,6 +21,7 @@ Blocked by: 04
 ## Comments
 
 2026-11-28（04 的 review 留下來的）：
+- 「合格 ≥ 8 幀」那一格的三個例子（8＋2、7＋3、3＋3 平手兩種順序）04 已經寫成測試：`tests/test_drop_check.cpp` 的 `drop check: frames that disagree are merged`（04 的 Q1 決定）。那一格先不打勾：05 加上飛行狀態後，要確認 `tilted`、`moving` 等原因也照同一個規則合併。
 - 「較小的不取代新的」也要涵蓋**同一個 `request_id` 重送**：現在 `on_check_request` 一律取代等待中的確認，同一個 id 重送會清掉已收的幀重收；server 每 300 ms 重送一次時可能永遠收不滿（04 review 的 AD1、SP2）。
 - 先決定比較的對象：跟等待中的那筆比，還是跟歷史最大的比（§9.1 寫「比目前最大的還小」）。跟歷史最大的比時，server 重啟後 `request_id` 從 1 開始，核心要有辦法知道 `session_id` 換了，不然之後的請求都會被丟掉。
 - 這條規則來自 §9.1 的 UDP 重送和去重。開發板 ↔ server 的協定還沒跟 server 組確認（server 組員 2026-11-23 把 Godot ↔ server 改成二進位），協定改了（例如沒有重送、沒有 `request_id`、改用 TCP）這一格要跟著改或拿掉。

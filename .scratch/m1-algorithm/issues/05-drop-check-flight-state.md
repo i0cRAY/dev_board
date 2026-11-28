@@ -25,3 +25,6 @@ Blocked by: 04
 - 先決定比較的對象：跟等待中的那筆比，還是跟歷史最大的比（§9.1 寫「比目前最大的還小」）。跟歷史最大的比時，server 重啟後 `request_id` 從 1 開始，核心要有辦法知道 `session_id` 換了，不然之後的請求都會被丟掉。
 - 這條規則來自 §9.1 的 UDP 重送和去重。開發板 ↔ server 的協定還沒跟 server 組確認（server 組員 2026-11-23 把 Godot ↔ server 改成二進位），協定改了（例如沒有重送、沒有 `request_id`、改用 TCP）這一格要跟著改或拿掉。
 - 「合格 ≥ 8 幀」那一格的三個例子（8＋2、7＋3、3＋3 平手兩種順序）04 已經寫成測試：`tests/test_drop_check.cpp` 的 `drop check: frames that disagree are merged`（04 的 Q1 決定）。那一格先不打勾：05 加上飛行狀態後，要確認 `tilted`、`moving` 等原因也照同一個規則合併。
+
+2026-11-28（實作前的決定）：
+- 比較的對象選 O1：只跟**等待中**的確認比。比它大就取代；比它小或相同（含同一個 id 重送）不理；沒有等待中的確認時，任何 id 都開始新的確認。已算完的請求重送、`session_id` 換了，由 M2 的去重和結果快取處理（M1 spec 的 Out of Scope）。理由：核心介面不用改；O2 要讓 `CheckRequest` 帶 `session_id`，等於先把還沒跟 server 組定的 §9.1 協定寫進核心。

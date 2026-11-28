@@ -65,6 +65,11 @@ std::string name(const std::optional<CheckReason>& reason) {
     return "?";
 }
 
+DepthFrame frame_of(const Config& config, std::uint32_t frame_id, const std::vector<std::uint16_t>& depth,
+                    std::uint64_t timestamp_ms = 0) {
+    return {frame_id, timestamp_ms, config.camera.depth.width, config.camera.depth.height, depth};
+}
+
 // 按「確認」後依序送 depths 的每一張（frame_id 1、2、…，sim time 100、200、… ms），回傳最後一幀產生的結果。
 // 前面的幀不能有結果。vx、vy 是 PX4 的水平速度（北、東）
 std::optional<DropCheck> drop_check(const Config& config, const Pose& pose,
@@ -79,8 +84,7 @@ std::optional<DropCheck> drop_check(const Config& config, const Pose& pose,
     std::optional<DropCheck> result;
     for (std::size_t i = 0; i < depths.size(); ++i) {
         const auto id = static_cast<std::uint32_t>(i + 1);
-        Results results = core.on_depth(
-            {id, 100u * id, config.camera.depth.width, config.camera.depth.height, depths[i]}, at(30 * (i + 1)));
+        Results results = core.on_depth(frame_of(config, id, depths[i], 100u * id), at(30 * (i + 1)));
         if (i + 1 < depths.size()) {
             REQUIRE_FALSE(results.drop_check.has_value());
         } else {
@@ -149,10 +153,6 @@ bool one_of(const std::string& result, std::initializer_list<const char*> expect
         }
     }
     return false;
-}
-
-DepthFrame frame_of(const Config& config, std::uint32_t frame_id, const std::vector<std::uint16_t>& depth) {
-    return {frame_id, 0, config.camera.depth.width, config.camera.depth.height, depth};
 }
 
 }  // namespace
@@ -230,8 +230,7 @@ TEST_CASE("drop check: a position whose speed is not finite is ignored") {
     core.on_check_request({3}, at(0));
     std::optional<DropCheck> result;
     for (std::uint32_t id = 1; id <= 10; ++id) {
-        result = core.on_depth({id, 100u * id, config.camera.depth.width, config.camera.depth.height, flat}, at(0))
-                     .drop_check;
+        result = core.on_depth(frame_of(config, id, flat, 100u * id), at(0)).drop_check;
     }
     CHECK(verdict_of(config, result) == "moving");
 }
@@ -253,8 +252,7 @@ TEST_CASE("drop check: the speed of each frame is interpolated to the frame time
     core.on_check_request({3}, at(0));
     std::optional<DropCheck> result;
     for (std::uint32_t id = 1; id <= 10; ++id) {
-        result = core.on_depth({id, 100u * id, config.camera.depth.width, config.camera.depth.height, flat}, at(0))
-                     .drop_check;
+        result = core.on_depth(frame_of(config, id, flat, 100u * id), at(0)).drop_check;
     }
     REQUIRE(result.has_value());
     REQUIRE(result->frames.size() == 10);
@@ -687,8 +685,7 @@ TEST_CASE("drop check: not enough frames within 1.5 s is no_depth") {
         const Now now = at(200 * static_cast<int>(id));
         core.on_attitude({200 * id, 0.0, 0.0, 0.0}, now);
         core.on_position({200 * id, 0.0, 0.0, pose.down_m, 0.0, 0.0}, now);
-        const DepthFrame frame{id, 200u * id, config.camera.depth.width, config.camera.depth.height,
-                               id <= 2 ? hole : flat};
+        const DepthFrame frame = frame_of(config, id, id <= 2 ? hole : flat, 200u * id);
         REQUIRE_FALSE(core.on_depth(frame, now).drop_check.has_value());
     }
     CHECK_FALSE(core.on_tick(at(1499)).drop_check.has_value());
@@ -723,7 +720,7 @@ TEST_CASE("drop check: a frame without PX4 data still answers no_depth once 1.5 
     core.on_check_request({1}, at(0));
     const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, hover(3.0));
     const Results results =
-        core.on_depth({1, 100, config.camera.depth.width, config.camera.depth.height, flat}, at(1500));
+        core.on_depth(frame_of(config, 1, flat, 100), at(1500));
     REQUIRE(results.drop_check.has_value());
     CHECK(name(results.drop_check->reason) == "no_depth");
 }
@@ -738,19 +735,18 @@ TEST_CASE("drop check: every event answers no_depth once 1.5 s have passed") {
         const Now now = at(100 * static_cast<int>(id));
         core.on_attitude({100 * id, 0.0, 0.0, 0.0}, now);
         core.on_position({100 * id, 0.0, 0.0, -3.0, 0.0, 0.0}, now);
-        REQUIRE_FALSE(core.on_depth({id, 100u * id, config.camera.depth.width, config.camera.depth.height, flat}, now)
-                          .drop_check.has_value());
+        REQUIRE_FALSE(core.on_depth(frame_of(config, id, flat, 100u * id), now).drop_check.has_value());
     }
     Results results;
     SUBCASE("a 10th frame that arrives at 1.5 s does not count") {
         core.on_attitude({1000, 0.0, 0.0, 0.0}, at(1000));
         core.on_position({1000, 0.0, 0.0, -3.0, 0.0, 0.0}, at(1000));
-        results = core.on_depth({10, 1000, config.camera.depth.width, config.camera.depth.height, flat}, at(1500));
+        results = core.on_depth(frame_of(config, 10, flat, 1000), at(1500));
     }
     SUBCASE("attitude") { results = core.on_attitude({1000, 0.0, 0.0, 0.0}, at(1500)); }
     SUBCASE("an attitude that is not accepted") { results = core.on_attitude({1000, 1e9, 0.0, 0.0}, at(1500)); }
     SUBCASE("a frame whose time cannot be interpolated") {
-        results = core.on_depth({10, 5000, config.camera.depth.width, config.camera.depth.height, flat}, at(1500));
+        results = core.on_depth(frame_of(config, 10, flat, 5000), at(1500));
     }
     SUBCASE("position") { results = core.on_position({1000, 0.0, 0.0, -3.0, 0.0, 0.0}, at(1500)); }
     SUBCASE("a check request with a smaller request_id") {
@@ -760,8 +756,7 @@ TEST_CASE("drop check: every event answers no_depth once 1.5 s have passed") {
         for (std::uint32_t id = 10; id <= 19; ++id) {
             core.on_attitude({100 * id, 0.0, 0.0, 0.0}, at(1500));
             core.on_position({100 * id, 0.0, 0.0, -3.0, 0.0, 0.0}, at(1500));
-            next = core.on_depth({id, 100u * id, config.camera.depth.width, config.camera.depth.height, flat}, at(1500))
-                       .drop_check;
+            next = core.on_depth(frame_of(config, id, flat, 100u * id), at(1500)).drop_check;
         }
         REQUIRE(next.has_value());
         CHECK(next->request_id == 2);
@@ -867,9 +862,7 @@ TEST_CASE("drop check: flight state reasons are merged with the same rule") {
                 ++id;
                 core.on_attitude({100 * id, frame.roll, 0.0, 0.0}, at(0));
                 core.on_position({100 * id, 0.0, 0.0, -3.0, frame.vx, 0.0}, at(0));
-                result = core.on_depth(
-                    {id, 100u * id, config.camera.depth.width, config.camera.depth.height, *frame.depth}, at(0))
-                             .drop_check;
+                result = core.on_depth(frame_of(config, id, *frame.depth, 100u * id), at(0)).drop_check;
             }
         }
         REQUIRE(id == 10);

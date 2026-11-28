@@ -211,6 +211,31 @@ TEST_CASE("drop check: moving faster than the limit") {
     SUBCASE("0 passes") { CHECK(verdict_of(config, drop_check(config, pose, flat, 0.0, 0.0)) == "ok"); }
 }
 
+// 速度不是有限值的位置整筆不收：收了會內插出 NaN，NaN > 0.3 不成立，在移動也會判合格。
+// 0 和 1000 ms 是 1 m/s，50 ms 多一筆壞的
+TEST_CASE("drop check: a position whose speed is not finite is ignored") {
+    const Config config = load_config(kConfigPath);
+    const Pose pose = hover(3.0);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, pose);
+    Position bad{50, 0.0, 0.0, pose.down_m, 1.0, 0.0};
+    SUBCASE("vx NaN") { bad.vx_mps = std::nan(""); }
+    SUBCASE("vx inf") { bad.vx_mps = HUGE_VAL; }
+    SUBCASE("vy -inf") { bad.vy_mps = -HUGE_VAL; }
+    DecisionCore core(config);
+    core.on_attitude({0, 0.0, 0.0, 0.0}, at(0));
+    core.on_attitude({1000, 0.0, 0.0, 0.0}, at(0));
+    core.on_position({0, 0.0, 0.0, pose.down_m, 1.0, 0.0}, at(0));
+    core.on_position({1000, 0.0, 0.0, pose.down_m, 1.0, 0.0}, at(0));
+    core.on_position(bad, at(0));
+    core.on_check_request({3}, at(0));
+    std::optional<DropCheck> result;
+    for (std::uint32_t id = 1; id <= 10; ++id) {
+        result = core.on_depth({id, 100u * id, config.camera.depth.width, config.camera.depth.height, flat}, at(0))
+                     .drop_check;
+    }
+    CHECK(verdict_of(config, result) == "moving");
+}
+
 // PX4 的速度內插到幀時間：sim time 0 → 1000 ms 從 0 加速到 0.55 m/s，第 k 幀（k·100 ms）是 0.055·k m/s
 TEST_CASE("drop check: the speed of each frame is interpolated to the frame time") {
     const Config config = load_config(kConfigPath);

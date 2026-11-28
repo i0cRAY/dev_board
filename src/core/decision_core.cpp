@@ -170,6 +170,11 @@ Results DecisionCore::on_attitude(const Attitude& attitude, Now now) {
 
 Results DecisionCore::on_position(const Position& position, Now now) {
     const Results expired{{}, expire(now)};
+    // vx、vy 不是有限值整筆不收：內插出 NaN 時 moving 的比較不成立，在移動也會判合格。
+    // north、east、down 在第一個用到的 ticket（06）一起檢查
+    if (!std::isfinite(position.vx_mps) || !std::isfinite(position.vy_mps)) {
+        return expired;
+    }
     remember(positions_, position, config_.timing.px4_buffer_ms);
     return expired;
 }

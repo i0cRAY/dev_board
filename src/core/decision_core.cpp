@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <stdexcept>
 
+#include "core/angle.h"
 #include "core/terrain.h"
 
 namespace dev_board {
@@ -13,7 +14,6 @@ namespace {
 
 using Vec3 = std::array<double, 3>;
 
-constexpr double kPi = 3.14159265358979323846;
 // 角度的上限多留一點：MAVLink 是 float，最接近 π 的 float 比 double 的 π 大約 9e-8
 constexpr double kMaxAngle = kPi + 1e-6;
 
@@ -59,20 +59,11 @@ std::optional<Bracket<Sample>> bracket(const std::vector<Sample>& buffer, std::i
 
 double lerp(double from, double to, double a) { return from + a * (to - from); }
 
-// 偶數個時取中間兩個的平均（§6.1）。一幀上萬個點，不整個排序
-double median(std::vector<double> values) {
-    const std::size_t mid = values.size() / 2;
-    std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(mid), values.end());
-    if (values.size() % 2 == 1) {
-        return values[mid];
-    }
-    return (*std::max_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(mid)) + values[mid]) / 2.0;
-}
+}  // namespace
 
 // §5 第 3～7 步：把每個有效點放進細格，無效像素沿射線打到中位數高度的水平面，算進落點那格的無效數。
 // 細格涵蓋 Z、外圈和外圈外面一格
-terrain::Grid project(const Config& config, const std::vector<double>& ray_x, const std::vector<double>& ray_y,
-                      const DepthFrame& frame, const Attitude& attitude) {
+terrain::Grid DecisionCore::project(const DepthFrame& frame, const Attitude& attitude) const {
     const double cr = std::cos(attitude.roll);
     const double sr = std::sin(attitude.roll);
     const double cp = std::cos(attitude.pitch);
@@ -83,10 +74,10 @@ terrain::Grid project(const Config& config, const std::vector<double>& ray_x, co
         const double z = sr * b[1] + cr * b[2];
         return {cp * b[0] + sp * z, y, cp * z - sp * b[0]};
     };
-    const Vec3 o = rotate(config.camera.t_cam);
+    const Vec3 o = rotate(config_.camera.t_cam);
 
-    terrain::Grid grid(config.zone.width_cells / 2 + config.zone.ring_cells + 1, config.grid.cell_size_m);
-    const Intrinsics& k = config.camera.depth;
+    terrain::Grid grid(config_.zone.width_cells / 2 + config_.zone.ring_cells + 1, config_.grid.cell_size_m);
+    const Intrinsics& k = config_.camera.depth;
     std::vector<double> heights;
     for (int v = 0; v < k.height; ++v) {
         for (int u = 0; u < k.width; ++u) {
@@ -96,23 +87,23 @@ terrain::Grid project(const Config& config, const std::vector<double>& ray_x, co
             }
             const double z = mm / 1000.0;
             // 相機光學座標 → 機身 FRD：(x_b, y_b, z_b) = (−y_c, x_c, z_c)
-            const Vec3 q = rotate({-z * ray_y[v], z * ray_x[u], z});
+            const Vec3 q = rotate({-z * ray_y_[v], z * ray_x_[u], z});
             grid.add_valid(q[0] + o[0], q[1] + o[1], -q[2]);  // h 不加 o.z，從相機量起
             heights.push_back(-q[2]);
         }
     }
     if (heights.empty()) {
-        return grid;  // 沒有中位數：所有細格都是 0 個點
+        return grid;  // 沒有中位數：所有細格都是 0 個點，沒有 h20 要算
     }
 
     // 第 7 步：深度 1 的射線方向打到 h = h_med，要往下（d.z > 0）而且 h_med 在相機下面才打得到
-    const double h_med = median(heights);
+    const double h_med = terrain::median(heights);
     for (int v = 0; v < k.height; ++v) {
         for (int u = 0; u < k.width; ++u) {
             if (frame.depth_mm[static_cast<std::size_t>(v) * k.width + u] != 0) {
                 continue;
             }
-            const Vec3 d = rotate({-ray_y[v], ray_x[u], 1.0});
+            const Vec3 d = rotate({-ray_y_[v], ray_x_[u], 1.0});
             const double z = -h_med / d[2];
             if (!(d[2] > 0.0 && z > 0.0)) {
                 continue;
@@ -120,28 +111,9 @@ terrain::Grid project(const Config& config, const std::vector<double>& ray_x, co
             grid.add_invalid(z * d[0] + o[0], z * d[1] + o[1]);
         }
     }
+    grid.finish(config_.evaluate.low_percentile);
     return grid;
 }
-
-// §6.1：正下方 Z 裡有高度的細格（有效點 ≥ 1）的平均高度取中位數；不到一半時量不到
-std::optional<double> agl(const terrain::Grid& grid, int zone_cells) {
-    const int zh = zone_cells / 2;
-    std::vector<double> heights;
-    for (int ix = -zh; ix < zh; ++ix) {
-        for (int iy = -zh; iy < zh; ++iy) {
-            const terrain::Cell& cell = grid.at(ix, iy);
-            if (cell.valid > 0) {
-                heights.push_back(cell.sum_h / cell.valid);
-            }
-        }
-    }
-    if (heights.size() * 2 < static_cast<std::size_t>(zone_cells * zone_cells)) {
-        return std::nullopt;
-    }
-    return -median(heights);
-}
-
-}  // namespace
 
 DecisionCore::DecisionCore(const Config& config) : config_(config) {
     const Intrinsics& k = config_.camera.depth;
@@ -190,8 +162,8 @@ Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
     Attitude at_frame = *attitude->before;
     at_frame.roll = lerp(attitude->before->roll, attitude->after->roll, attitude->a);
     at_frame.pitch = lerp(attitude->before->pitch, attitude->after->pitch, attitude->a);
-    const terrain::Grid grid = project(config_, ray_x_, ray_y_, frame, at_frame);
-    const std::optional<double> height = agl(grid, config_.zone.width_cells);
+    const terrain::Grid grid = project(frame, at_frame);
+    const std::optional<double> height = terrain::agl(grid, config_.zone.width_cells);
     std::optional<DropCheck> check;
     if (check_) {
         check = collect(frame, terrain::evaluate(grid, config_));

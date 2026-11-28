@@ -10,6 +10,10 @@
 
 namespace dev_board {
 
+namespace terrain {
+class Grid;
+}
+
 // 本機單調時鐘的「現在」。核心不讀時鐘，每個事件由呼叫端帶進來。
 using Now = std::chrono::steady_clock::time_point;
 
@@ -94,6 +98,8 @@ public:
     Results on_tick(Now now);
 
 private:
+    // §5 第 3～7 步：把一幀放進正下方的細格
+    terrain::Grid project(const DepthFrame& frame, const Attitude& attitude) const;
     DataState state() const;
     std::optional<DropCheck> collect(const DepthFrame& frame, std::optional<CheckReason> reason);
 

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstddef>
 
+#include "core/angle.h"
+
 namespace dev_board::terrain {
 
 Grid::Grid(int half, double cell_size)
@@ -49,6 +51,31 @@ void Grid::add_invalid(double x, double y) {
     }
 }
 
+void Grid::finish(double low_percentile) {
+    for (Cell& cell : cells_) {
+        std::vector<double>& heights = cell.heights;
+        if (heights.empty()) {
+            continue;
+        }
+        // 由低到高第 max(ceil(p·n) − 1, 0) 個。設定檔改成其他百分位時，例如 0.28 × 25 算出來是
+        // 7.000000000000001，不減一點會多算一個
+        const double rank = std::ceil(low_percentile * static_cast<double>(heights.size()) - 1e-9) - 1.0;
+        const auto index = static_cast<std::ptrdiff_t>(std::max(rank, 0.0));
+        std::nth_element(heights.begin(), heights.begin() + index, heights.end());
+        cell.h20 = heights[static_cast<std::size_t>(index)];
+        heights = {};
+    }
+}
+
+double median(std::vector<double> values) {
+    const std::size_t mid = values.size() / 2;
+    std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(mid), values.end());
+    if (values.size() % 2 == 1) {
+        return values[mid];
+    }
+    return (*std::max_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(mid)) + values[mid]) / 2.0;
+}
+
 namespace {
 
 // 有效點 < 3 或無效比例 > 50%（§6.2 第 1 步）。0 個點的格子也是
@@ -58,23 +85,6 @@ bool unknown(const Cell& cell, const Config::Evaluate& e) {
 }
 
 double mean_h(const Cell& cell) { return cell.sum_h / cell.valid; }
-
-// 第 low_percentile 百分位的高度：由低到高第 max(ceil(p·n) − 1, 0) 個（§5 第 6 步）
-double h20(const Cell& cell, double percentile) {
-    std::vector<double> heights = cell.heights;
-    // 設定檔改成其他百分位時，例如 0.28 × 25 算出來是 7.000000000000001，不減一點會多算一個
-    const double rank = std::ceil(percentile * static_cast<double>(heights.size()) - 1e-9) - 1.0;
-    const auto index = static_cast<std::ptrdiff_t>(std::max(rank, 0.0));
-    std::nth_element(heights.begin(), heights.begin() + index, heights.end());
-    return heights[static_cast<std::size_t>(index)];
-}
-
-// 偶數個時取中間兩個的平均（§6.2 第 2 步）
-double median(std::vector<double> values) {
-    std::sort(values.begin(), values.end());
-    const std::size_t mid = values.size() / 2;
-    return values.size() % 2 == 1 ? values[mid] : (values[mid - 1] + values[mid]) / 2.0;
-}
 
 // h = a·x + b·y + c，另外帶擬合用的點到平面的殘差 RMS
 struct Plane {
@@ -149,6 +159,23 @@ int largest_square(const std::vector<bool>& mask, int half) {
 
 }  // namespace
 
+std::optional<double> agl(const Grid& grid, int zone_cells) {
+    const int zh = zone_cells / 2;
+    std::vector<double> heights;
+    for (int ix = -zh; ix < zh; ++ix) {
+        for (int iy = -zh; iy < zh; ++iy) {
+            const Cell& cell = grid.at(ix, iy);
+            if (cell.valid > 0) {
+                heights.push_back(mean_h(cell));
+            }
+        }
+    }
+    if (heights.size() * 2 < static_cast<std::size_t>(zone_cells * zone_cells)) {
+        return std::nullopt;
+    }
+    return -median(heights);
+}
+
 std::optional<CheckReason> evaluate(const Grid& grid, const Config& config) {
     const Config::Evaluate& e = config.evaluate;
     const int zh = config.zone.width_cells / 2;
@@ -198,7 +225,7 @@ std::optional<CheckReason> evaluate(const Grid& grid, const Config& config) {
     for (int round = 0; round < e.refit_rounds; ++round) {
         Cells kept;
         for (const auto& [ix, iy] : inliers) {
-            if (plane->at((ix + 0.5) * s, (iy + 0.5) * s) - h20(grid.at(ix, iy), e.low_percentile) < d) {
+            if (plane->at((ix + 0.5) * s, (iy + 0.5) * s) - grid.at(ix, iy).h20 < d) {
                 kept.emplace_back(ix, iy);
             }
         }
@@ -213,7 +240,6 @@ std::optional<CheckReason> evaluate(const Grid& grid, const Config& config) {
     }
 
     // 第 3 步：坡度
-    constexpr double kDegree = 3.14159265358979323846 / 180.0;
     if (std::atan(std::hypot(plane->a, plane->b)) > e.max_slope_deg * kDegree) {
         return CheckReason::slope;
     }
@@ -227,19 +253,22 @@ std::optional<CheckReason> evaluate(const Grid& grid, const Config& config) {
     // 第 5 步：Z、外圈和外圈外面一格的 LOW/UNKNOWN、HIGH（細格中心的基準面高度）
     const int g = grid.half();
     const int zr = zh + config.zone.ring_cells;
-    std::vector<bool> low(static_cast<std::size_t>(4 * g * g), false);
-    const auto is_low = [&](int ix, int iy) { return low[static_cast<std::size_t>((ix + g) * 2 * g + iy + g)]; };
+    std::vector<char> low(static_cast<std::size_t>(4 * g * g), 0);
+    const auto low_at = [&](int ix, int iy) -> char& {
+        return low[static_cast<std::size_t>((ix + g) * 2 * g + iy + g)];
+    };
+    const auto is_low = [&](int ix, int iy) { return low_at(ix, iy) != 0; };
     bool high_in_zone = false;
     bool high_in_ring = false;
     for (int ix = -g; ix < g; ++ix) {
         for (int iy = -g; iy < g; ++iy) {
             const Cell& c = grid.at(ix, iy);
             if (unknown(c, e)) {
-                low[static_cast<std::size_t>((ix + g) * 2 * g + iy + g)] = true;
+                low_at(ix, iy) = 1;
                 continue;
             }
             const double base = plane->at((ix + 0.5) * s, (iy + 0.5) * s);
-            low[static_cast<std::size_t>((ix + g) * 2 * g + iy + g)] = base - h20(c, e.low_percentile) >= d;
+            low_at(ix, iy) = base - c.h20 >= d;
             const bool in_zone = ix >= -zh && ix < zh && iy >= -zh && iy < zh;
             const bool in_ring = !in_zone && ix >= -zr && ix < zr && iy >= -zr && iy < zr;
             if (mean_h(c) - base >= d) {

@@ -59,22 +59,53 @@ std::optional<Bracket<Sample>> bracket(const std::vector<Sample>& buffer, std::i
 
 double lerp(double from, double to, double a) { return from + a * (to - from); }
 
+// 每個原因的幀數，只列出現過的
+std::map<CheckReason, int> count_reasons(const std::vector<FrameCheck>& frames) {
+    std::map<CheckReason, int> counts;
+    for (const FrameCheck& f : frames) {
+        if (f.reason) {
+            ++counts[*f.reason];
+        }
+    }
+    return counts;
+}
+
+// 機身 FRD ↔ 水平座標系：R = Ry(pitch)·Rx(roll)，不含 yaw（§5 第 5 步）
+class Tilt {
+public:
+    explicit Tilt(const Attitude& attitude)
+        : cr_(std::cos(attitude.roll)),
+          sr_(std::sin(attitude.roll)),
+          cp_(std::cos(attitude.pitch)),
+          sp_(std::sin(attitude.pitch)) {}
+
+    // R·b
+    Vec3 to_horizontal(const Vec3& b) const {
+        const double y = cr_ * b[1] - sr_ * b[2];
+        const double z = sr_ * b[1] + cr_ * b[2];
+        return {cp_ * b[0] + sp_ * z, y, cp_ * z - sp_ * b[0]};
+    }
+    // Rᵀ·h
+    Vec3 to_body(const Vec3& h) const {
+        const double x = cp_ * h[0] - sp_ * h[2];
+        const double z = sp_ * h[0] + cp_ * h[2];
+        return {x, cr_ * h[1] + sr_ * z, cr_ * z - sr_ * h[1]};
+    }
+
+private:
+    double cr_;
+    double sr_;
+    double cp_;
+    double sp_;
+};
+
 }  // namespace
 
 // §5 第 3～7 步：把每個有效點放進細格，無效像素沿射線打到中位數高度的水平面，算進落點那格的無效數。
 // 細格涵蓋 Z、外圈和外圈外面一格
 terrain::Grid DecisionCore::project(const DepthFrame& frame, const Attitude& attitude) const {
-    const double cr = std::cos(attitude.roll);
-    const double sr = std::sin(attitude.roll);
-    const double cp = std::cos(attitude.pitch);
-    const double sp = std::sin(attitude.pitch);
-    // 機身 FRD → 水平座標系：R = Ry(pitch)·Rx(roll)
-    const auto rotate = [&](const Vec3& b) -> Vec3 {
-        const double y = cr * b[1] - sr * b[2];
-        const double z = sr * b[1] + cr * b[2];
-        return {cp * b[0] + sp * z, y, cp * z - sp * b[0]};
-    };
-    const Vec3 o = rotate(config_.camera.t_cam);
+    const Tilt tilt(attitude);
+    const Vec3 o = tilt.to_horizontal(config_.camera.t_cam);
 
     terrain::Grid grid(config_.zone.width_cells / 2 + config_.zone.ring_cells + 1, config_.grid.cell_size_m);
     const Intrinsics& k = config_.camera.depth;
@@ -87,7 +118,7 @@ terrain::Grid DecisionCore::project(const DepthFrame& frame, const Attitude& att
             }
             const double z = mm / 1000.0;
             // 相機光學座標 → 機身 FRD：(x_b, y_b, z_b) = (−y_c, x_c, z_c)
-            const Vec3 q = rotate({-z * ray_y_[v], z * ray_x_[u], z});
+            const Vec3 q = tilt.to_horizontal({-z * ray_y_[v], z * ray_x_[u], z});
             grid.add_valid(q[0] + o[0], q[1] + o[1], -q[2]);  // h 不加 o.z，從相機量起
             heights.push_back(-q[2]);
         }
@@ -103,7 +134,7 @@ terrain::Grid DecisionCore::project(const DepthFrame& frame, const Attitude& att
             if (frame.depth_mm[static_cast<std::size_t>(v) * k.width + u] != 0) {
                 continue;
             }
-            const Vec3 d = rotate({-ray_y_[v], ray_x_[u], 1.0});
+            const Vec3 d = tilt.to_horizontal({-ray_y_[v], ray_x_[u], 1.0});
             const double z = -h_med / d[2];
             if (!(d[2] > 0.0 && z > 0.0)) {
                 continue;
@@ -125,22 +156,29 @@ DecisionCore::DecisionCore(const Config& config) : config_(config) {
     }
 }
 
-Results DecisionCore::on_attitude(const Attitude& attitude, Now) {
+Results DecisionCore::on_attitude(const Attitude& attitude, Now now) {
+    const Results expired{{}, expire(now)};
     // roll 或 pitch 超過 ±kMaxAngle（含 NaN、inf）整筆不收：進到後面會變成未定義的浮點數轉整數，
     // 很大的有限值內插時也會溢位。yaw 在第一個用到的 ticket（06）一起檢查
     if (!(std::abs(attitude.roll) <= kMaxAngle) || !(std::abs(attitude.pitch) <= kMaxAngle)) {
-        return {};
+        return expired;
     }
     remember(attitudes_, attitude, config_.timing.px4_buffer_ms);
-    return {};
+    return expired;
 }
 
-Results DecisionCore::on_position(const Position& position, Now) {
+Results DecisionCore::on_position(const Position& position, Now now) {
+    const Results expired{{}, expire(now)};
+    // vx、vy 不是有限值整筆不收：內插出 NaN 時 moving 的比較不成立，在移動也會判合格。
+    // north、east、down 在第一個用到的 ticket（06）一起檢查
+    if (!std::isfinite(position.vx_mps) || !std::isfinite(position.vy_mps)) {
+        return expired;
+    }
     remember(positions_, position, config_.timing.px4_buffer_ms);
-    return {};
+    return expired;
 }
 
-Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
+Results DecisionCore::on_depth(const DepthFrame& frame, Now now) {
     const Intrinsics& k = config_.camera.depth;
     if (frame.width != k.width || frame.height != k.height) {
         throw std::invalid_argument("DecisionCore::on_depth: frame size does not match camera.depth");
@@ -148,32 +186,82 @@ Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
     if (frame.depth_mm.size() != static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height)) {
         throw std::invalid_argument("DecisionCore::on_depth: depth_mm is not width x height");
     }
+    // 期限到了這一幀就不算進確認：先回 no_depth
+    std::optional<DropCheck> check = expire(now);
     depth_seen_ = true;
+    last_frame_timestamp_ = frame.timestamp_ms;
     const DataState now_state = state();
     if (now_state != DataState::ok) {
-        return {Height{std::nullopt, now_state}, {}};
+        return {Height{std::nullopt, now_state}, check};
     }
-    // 03 只用到 roll、pitch；位置要夾得住才算能用。yaw、位置、速度的內插在第一個用到的 ticket 做
+    // 用到 roll、pitch、vx、vy；位置要夾得住才算能用。yaw 和 north、east、down 的內插在 06 做
     const std::int64_t t = static_cast<std::int64_t>(frame.timestamp_ms);
     const auto attitude = bracket(attitudes_, t);
-    if (!attitude || !bracket(positions_, t)) {
-        return {};
+    const auto position = bracket(positions_, t);
+    if (!attitude || !position) {
+        return {{}, check};
     }
     Attitude at_frame = *attitude->before;
     at_frame.roll = lerp(attitude->before->roll, attitude->after->roll, attitude->a);
     at_frame.pitch = lerp(attitude->before->pitch, attitude->after->pitch, attitude->a);
+    Position position_at_frame = *position->before;
+    position_at_frame.vx_mps = lerp(position->before->vx_mps, position->after->vx_mps, position->a);
+    position_at_frame.vy_mps = lerp(position->before->vy_mps, position->after->vy_mps, position->a);
     const terrain::Grid grid = project(frame, at_frame);
     const std::optional<double> height = terrain::agl(grid, config_.zone.width_cells);
-    std::optional<DropCheck> check;
     if (check_) {
-        check = collect(frame, terrain::evaluate(grid, config_));
+        check = collect(frame, check_frame(grid, height, at_frame, position_at_frame));
     }
     return {Height{height, DataState::ok}, check};
 }
 
-Results DecisionCore::on_check_request(const CheckRequest& request, Now) {
-    check_ = PendingCheck{request.request_id, {}};
-    return {};
+Results DecisionCore::on_check_request(const CheckRequest& request, Now now) {
+    const Results expired{{}, expire(now)};
+    // 只跟等待中的確認比：比它小或相同（重送）的不取代它（05 的決定 O1）
+    if (check_ && request.request_id <= check_->request_id) {
+        return expired;
+    }
+    check_ = PendingCheck{request.request_id, now + std::chrono::milliseconds(config_.drop_check.max_wait_ms), {}};
+    return expired;
+}
+
+// §7 每幀一個結果：依序檢查，第一個成立的就是這一幀的原因
+std::optional<CheckReason> DecisionCore::check_frame(const terrain::Grid& grid, std::optional<double> agl,
+                                                     const Attitude& attitude, const Position& position) const {
+    const double tilt_angle = std::acos(std::cos(attitude.roll) * std::cos(attitude.pitch));
+    if (tilt_angle > config_.limits.max_tilt_deg * kDegree) {
+        return CheckReason::tilted;
+    }
+    if (std::hypot(position.vx_mps, position.vy_mps) > config_.drop_check.max_speed_mps) {
+        return CheckReason::moving;
+    }
+    if (agl && *agl > config_.drop_check.drop_max_height_m) {
+        return CheckReason::too_high;
+    }
+    if (agl && (*agl < config_.limits.min_distance_m || !sees_zone_and_ring(*agl, attitude))) {
+        return CheckReason::too_low;
+    }
+    return terrain::evaluate(grid, config_);
+}
+
+// Z＋外圈的四個角 (±(Zw/2 + r), ±(Zw/2 + r))、深度 agl，用 §8.5 的公式投影到深度影像，都要在畫面裡（§7）
+bool DecisionCore::sees_zone_and_ring(double agl, const Attitude& attitude) const {
+    const Tilt tilt(attitude);
+    const Vec3 o = tilt.to_horizontal(config_.camera.t_cam);
+    const Intrinsics& k = config_.camera.depth;
+    const double a = config_.zone.width_m / 2.0 + config_.zone.ring_width_m;
+    for (const double x : {-a, a}) {
+        for (const double y : {-a, a}) {
+            const Vec3 b = tilt.to_body({x - o[0], y - o[1], agl});
+            // 機身 FRD → 相機光學座標：(x_c, y_c, z_c) = (y_b, −x_b, z_b)
+            const double u = k.fx * b[1] / b[2] + k.cx;
+            const double v = k.fy * -b[0] / b[2] + k.cy;
+            if (!(b[2] > 0.0 && u >= 0.0 && u < k.width && v >= 0.0 && v < k.height)) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 // 收進確認中的一幀；同一個 frame_id 只算一次。收滿時照 §7 合併
@@ -192,15 +280,8 @@ std::optional<DropCheck> DecisionCore::collect(const DepthFrame& frame, std::opt
     }
     // §7：合格幀數 ≥ min_pass 就合格；否則取最多的原因，平手時取排前面的（CheckReason 的順序）
     DropCheck result{check_->request_id, frame.timestamp_ms, true, std::nullopt, {}, frames};
-    int passed = 0;
-    std::map<CheckReason, int> counts;
-    for (const FrameCheck& f : frames) {
-        if (f.reason) {
-            ++counts[*f.reason];
-        } else {
-            ++passed;
-        }
-    }
+    const std::map<CheckReason, int> counts = count_reasons(frames);
+    const auto passed = std::count_if(frames.begin(), frames.end(), [](const FrameCheck& f) { return !f.reason; });
     if (passed < config_.drop_check.min_pass) {
         result.ok = false;
         result.counts = counts;
@@ -212,12 +293,23 @@ std::optional<DropCheck> DecisionCore::collect(const DepthFrame& frame, std::opt
     return result;
 }
 
-Results DecisionCore::on_tick(Now) {
+std::optional<DropCheck> DecisionCore::expire(Now now) {
+    if (!check_ || now < check_->deadline) {
+        return std::nullopt;
+    }
+    DropCheck result{check_->request_id, last_frame_timestamp_, false, CheckReason::no_depth,
+                     count_reasons(check_->frames), check_->frames};
+    check_.reset();
+    return result;
+}
+
+Results DecisionCore::on_tick(Now now) {
+    std::optional<DropCheck> expired = expire(now);
     const DataState now_state = state();
     if (now_state != DataState::ok) {
-        return {Height{std::nullopt, now_state}, {}};
+        return {Height{std::nullopt, now_state}, expired};
     }
-    return {};
+    return {{}, expired};
 }
 
 // 依序 no_depth → no_px4 → ok（§9.2 heartbeat）

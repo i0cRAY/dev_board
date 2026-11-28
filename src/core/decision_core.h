@@ -58,8 +58,9 @@ struct CheckRequest {
     std::uint32_t request_id;
 };
 
-// §7 drop_check 不合格的原因，依平手時的優先順序排。04 只做地面判斷，飛行狀態的原因在 05
-enum class CheckReason { hole, rough, slope, invalid_depth };
+// §7 drop_check 不合格的原因。hole～moving 是一幀的原因，依平手時的優先順序排；
+// no_depth 只會是整個確認的原因（1.5 秒內收不滿幀）
+enum class CheckReason { hole, rough, slope, invalid_depth, too_low, too_high, tilted, moving, no_depth };
 
 // 一幀的判斷（診斷資料，不進 JSON）
 struct FrameCheck {
@@ -70,7 +71,7 @@ struct FrameCheck {
 // §9.2 `drop_check` 的 payload，另外附每一幀的判斷
 struct DropCheck {
     std::uint32_t request_id;
-    std::uint64_t frame_timestamp;          // 最後一幀的 sim time
+    std::optional<std::uint64_t> frame_timestamp;  // 最後一幀的 sim time；從沒收過深度幀是空的
     bool ok;
     std::optional<CheckReason> reason;      // 合格時是空的
     std::map<CheckReason, int> counts;      // 只列出現過的原因；合格時是空的
@@ -84,6 +85,7 @@ struct Results {
 };
 
 // 判斷核心：餵事件，拿結果。不開執行緒、不讀時鐘、不碰網路，也不保證可以多執行緒同時呼叫。
+// 每個事件先檢查確認的期限（drop_check.max_wait_ms，從收到請求的 now 算起），到了就在這個事件的結果回 no_depth
 class DecisionCore {
 public:
     explicit DecisionCore(const Config& config);
@@ -92,7 +94,9 @@ public:
     Results on_position(const Position& position, Now now);
     // 尺寸跟 config.camera.depth 不同、或 depth_mm 的長度不是 width × height 時丟 std::invalid_argument
     Results on_depth(const DepthFrame& frame, Now now);
-    // 投放前確認：用之後收到的 drop_check.frames 個不同 frame_id 的幀檢查正下方（§7）
+    // 投放前確認：用之後收到的 drop_check.frames 個不同 frame_id 的幀檢查正下方（§7）。
+    // 收幀途中只有更大的 request_id 會取代等待中的確認；比它小或相同（重送）的不理。
+    // 已算完的請求重送會重新確認：去重和結果快取由呼叫端（M2）負責
     Results on_check_request(const CheckRequest& request, Now now);
     // 時間前進。資料狀態不是 ok 時回傳空的高度
     Results on_tick(Now now);
@@ -101,11 +105,18 @@ private:
     // §5 第 3～7 步：把一幀放進正下方的細格
     terrain::Grid project(const DepthFrame& frame, const Attitude& attitude) const;
     DataState state() const;
+    // 一幀的 agl（量不到是空的），姿態、速度都是內插到幀時間的值
+    std::optional<CheckReason> check_frame(const terrain::Grid& grid, std::optional<double> agl,
+                                           const Attitude& attitude, const Position& position) const;
+    bool sees_zone_and_ring(double agl, const Attitude& attitude) const;
     std::optional<DropCheck> collect(const DepthFrame& frame, std::optional<CheckReason> reason);
+    // 確認等到期限還沒收滿：回 no_depth，counts 是已收的幀（§7）
+    std::optional<DropCheck> expire(Now now);
 
     // 收幀中的確認
     struct PendingCheck {
         std::uint32_t request_id;
+        Now deadline;
         std::vector<FrameCheck> frames;
     };
 
@@ -113,6 +124,7 @@ private:
     std::vector<double> ray_x_;  // 反投影查表 (u + 0.5 − cx) / fx
     std::vector<double> ray_y_;  // (v + 0.5 − cy) / fy
     bool depth_seen_ = false;
+    std::optional<std::uint64_t> last_frame_timestamp_;  // 最後收到的深度幀的 sim time
     std::vector<Attitude> attitudes_;  // 依 time_boot_ms 排好，留最近 px4_buffer_ms
     std::vector<Position> positions_;
     std::optional<PendingCheck> check_;

@@ -24,3 +24,7 @@ Blocked by: 04
 ## Comments
 
 2026-11-26（03 留下的事）：03 的 `on_attitude` 對 roll、pitch 超過 ±(π + 1e-6)（含 NaN、inf）的姿態整筆不收。06 開始用 yaw 和位置的值，要用同樣的上限檢查 yaw（機頭朝南時 yaw 在 ±π，float 的 π 比 double 的大一點，所以不能用剛好 π 當上限），位置、速度檢查是不是有限值，一樣整筆不收，並補測試（含 yaw = float 的 ±π 要收）。
+
+2026-11-28（05 做了一部分）：05 的 `on_position` 已經檢查 `vx`、`vy` 是有限值（不是就整筆不收），也有測試。06 只要再補 north、east、down 和 yaw 的檢查。
+
+2026-11-28（05 review 的 ST5）：確認的 1.5 秒期限在每個事件開頭用 `expire(now)` 檢查。06 新增 `on_suggest_request`（或其他事件）時也要加這一行，並在 `tests/test_drop_check.cpp` 的「drop check: every event answers no_depth once 1.5 s have passed」補一個 SUBCASE。

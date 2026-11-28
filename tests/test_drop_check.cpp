@@ -56,25 +56,35 @@ std::string name(const std::optional<CheckReason>& reason) {
         case CheckReason::rough: return "rough";
         case CheckReason::slope: return "slope";
         case CheckReason::invalid_depth: return "invalid_depth";
+        case CheckReason::too_low: return "too_low";
+        case CheckReason::too_high: return "too_high";
+        case CheckReason::tilted: return "tilted";
+        case CheckReason::moving: return "moving";
+        case CheckReason::no_depth: return "no_depth";
     }
     return "?";
 }
 
+DepthFrame frame_of(const Config& config, std::uint32_t frame_id, const std::vector<std::uint16_t>& depth,
+                    std::uint64_t timestamp_ms = 0) {
+    return {frame_id, timestamp_ms, config.camera.depth.width, config.camera.depth.height, depth};
+}
+
 // 按「確認」後依序送 depths 的每一張（frame_id 1、2、…，sim time 100、200、… ms），回傳最後一幀產生的結果。
-// 前面的幀不能有結果
+// 前面的幀不能有結果。vx、vy 是 PX4 的水平速度（北、東）
 std::optional<DropCheck> drop_check(const Config& config, const Pose& pose,
-                                    const std::vector<std::vector<std::uint16_t>>& depths) {
+                                    const std::vector<std::vector<std::uint16_t>>& depths, double vx = 0.0,
+                                    double vy = 0.0) {
     DecisionCore core(config);
     for (const std::uint32_t t : {0u, 1000u}) {
         core.on_attitude({t, pose.roll, pose.pitch, pose.yaw}, at(0));
-        core.on_position({t, pose.north_m, pose.east_m, pose.down_m, 0.0, 0.0}, at(0));
+        core.on_position({t, pose.north_m, pose.east_m, pose.down_m, vx, vy}, at(0));
     }
     core.on_check_request({7}, at(0));
     std::optional<DropCheck> result;
     for (std::size_t i = 0; i < depths.size(); ++i) {
         const auto id = static_cast<std::uint32_t>(i + 1);
-        Results results = core.on_depth(
-            {id, 100u * id, config.camera.depth.width, config.camera.depth.height, depths[i]}, at(30 * (i + 1)));
+        Results results = core.on_depth(frame_of(config, id, depths[i], 100u * id), at(30 * (i + 1)));
         if (i + 1 < depths.size()) {
             REQUIRE_FALSE(results.drop_check.has_value());
         } else {
@@ -145,10 +155,6 @@ bool one_of(const std::string& result, std::initializer_list<const char*> expect
     return false;
 }
 
-DepthFrame frame_of(const Config& config, std::uint32_t frame_id, const std::vector<std::uint16_t>& depth) {
-    return {frame_id, 0, config.camera.depth.width, config.camera.depth.height, depth};
-}
-
 }  // namespace
 
 TEST_CASE("drop check: flat level ground passes") {
@@ -167,6 +173,188 @@ TEST_CASE("drop check: flat level ground passes") {
     }
 }
 
+
+// 傾角 = acos(cos(roll)·cos(pitch))，門檻 5°（§7）
+TEST_CASE("drop check: tilted more than the limit") {
+    const Config config = load_config(kConfigPath);
+    Pose pose = hover(3.0);
+    SUBCASE("roll 6 degrees") {
+        pose.roll = 6.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "tilted");
+    }
+    SUBCASE("roll 4 and pitch 4 degrees tilt 5.66 degrees") {
+        pose.roll = 4.0 * kDegree;
+        pose.pitch = 4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "tilted");
+    }
+    SUBCASE("roll 4 degrees passes") {
+        pose.roll = 4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "ok");
+    }
+}
+
+// 水平速度 hypot(vx, vy)，門檻 0.3 m/s（§7）
+TEST_CASE("drop check: moving faster than the limit") {
+    const Config config = load_config(kConfigPath);
+    const Pose pose = hover(3.0);
+    const std::vector<std::vector<std::uint16_t>> flat(
+        static_cast<std::size_t>(config.drop_check.frames), synthetic::synthesize_depth({}, config.camera, pose));
+    SUBCASE("1 m/s north is moving") {
+        CHECK(verdict_of(config, drop_check(config, pose, flat, 1.0, 0.0)) == "moving");
+    }
+    SUBCASE("1 m/s east is moving") {
+        CHECK(verdict_of(config, drop_check(config, pose, flat, 0.0, 1.0)) == "moving");
+    }
+    SUBCASE("0.25 m/s north and 0.25 m/s east is 0.35 m/s, moving") {
+        CHECK(verdict_of(config, drop_check(config, pose, flat, 0.25, 0.25)) == "moving");
+    }
+    SUBCASE("0 passes") { CHECK(verdict_of(config, drop_check(config, pose, flat, 0.0, 0.0)) == "ok"); }
+}
+
+// 速度不是有限值的位置整筆不收：收了會內插出 NaN，NaN > 0.3 不成立，在移動也會判合格。
+// 0 和 1000 ms 是 1 m/s，50 ms 多一筆壞的
+TEST_CASE("drop check: a position whose speed is not finite is ignored") {
+    const Config config = load_config(kConfigPath);
+    const Pose pose = hover(3.0);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, pose);
+    Position bad{50, 0.0, 0.0, pose.down_m, 1.0, 0.0};
+    SUBCASE("vx NaN") { bad.vx_mps = std::nan(""); }
+    SUBCASE("vx inf") { bad.vx_mps = HUGE_VAL; }
+    SUBCASE("vy -inf") { bad.vy_mps = -HUGE_VAL; }
+    DecisionCore core(config);
+    core.on_attitude({0, 0.0, 0.0, 0.0}, at(0));
+    core.on_attitude({1000, 0.0, 0.0, 0.0}, at(0));
+    core.on_position({0, 0.0, 0.0, pose.down_m, 1.0, 0.0}, at(0));
+    core.on_position({1000, 0.0, 0.0, pose.down_m, 1.0, 0.0}, at(0));
+    core.on_position(bad, at(0));
+    core.on_check_request({3}, at(0));
+    std::optional<DropCheck> result;
+    for (std::uint32_t id = 1; id <= 10; ++id) {
+        result = core.on_depth(frame_of(config, id, flat, 100u * id), at(0)).drop_check;
+    }
+    CHECK(verdict_of(config, result) == "moving");
+}
+
+// PX4 的速度內插到幀時間：sim time 0 → 1000 ms 從 0 加速到 0.55 m/s，第 k 幀（k·100 ms）是 0.055·k m/s
+TEST_CASE("drop check: the speed of each frame is interpolated to the frame time") {
+    const Config config = load_config(kConfigPath);
+    const Pose pose = hover(3.0);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, pose);
+    double vx = 0.0;
+    double vy = 0.0;
+    SUBCASE("north") { vx = 0.55; }
+    SUBCASE("east") { vy = 0.55; }
+    DecisionCore core(config);
+    core.on_attitude({0, 0.0, 0.0, 0.0}, at(0));
+    core.on_attitude({1000, 0.0, 0.0, 0.0}, at(0));
+    core.on_position({0, 0.0, 0.0, pose.down_m, 0.0, 0.0}, at(0));
+    core.on_position({1000, 0.0, 0.0, pose.down_m, vx, vy}, at(0));
+    core.on_check_request({3}, at(0));
+    std::optional<DropCheck> result;
+    for (std::uint32_t id = 1; id <= 10; ++id) {
+        result = core.on_depth(frame_of(config, id, flat, 100u * id), at(0)).drop_check;
+    }
+    REQUIRE(result.has_value());
+    REQUIRE(result->frames.size() == 10);
+    for (std::size_t i = 0; i < 10; ++i) {
+        CAPTURE(i);
+        CHECK(name(result->frames[i].reason) == std::string(i < 5 ? "ok" : "moving"));
+    }
+}
+
+// agl > drop_max_height（5 m）是 too_high；量不到 agl 時跳過這一步（§7）
+TEST_CASE("drop check: height above flat ground") {
+    const Config config = load_config(kConfigPath);
+    SUBCASE("3 m passes") { CHECK(verdict(config, {}, hover(3.0)) == "ok"); }
+    SUBCASE("5 m passes") { CHECK(verdict(config, {}, hover(5.0)) == "ok"); }
+    SUBCASE("7.5 m is too_high") { CHECK(verdict(config, {}, hover(7.5)) == "too_high"); }
+    SUBCASE("12 m is too_high") { CHECK(verdict(config, {}, hover(12.0)) == "too_high"); }
+    SUBCASE("18 m is too_high") { CHECK(verdict(config, {}, hover(18.0)) == "too_high"); }
+    SUBCASE("25 m is beyond the camera, invalid_depth") { CHECK(verdict(config, {}, hover(25.0)) == "invalid_depth"); }
+}
+
+// Z＋外圈的四個角 (±1.25, ±1.25) m 投影到深度影像，有任何一個在畫面外就是 too_low（§7）。
+// vfov/2 ≈ 35.4°：水平時約 1.76 m 以上前後兩個角才在畫面裡；pitch 4° 時約 2.05 m；
+// 相機往前 0.3 m 時後面的角離相機 1.55 m，約 2.18 m
+TEST_CASE("drop check: too low to see all of Z and its ring") {
+    const Config config = load_config(kConfigPath);
+    Pose pose;
+    SUBCASE("pitch 4 degrees at 1.5 m is too_low") {
+        pose = hover(1.5);
+        pose.pitch = 4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "too_low");
+    }
+    SUBCASE("pitch 4 degrees at 2.5 m passes") {
+        pose = hover(2.5);
+        pose.pitch = 4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "ok");
+    }
+    SUBCASE("1.9 m passes level and is too_low at pitch 4 degrees") {
+        pose = hover(1.9);
+        CHECK(verdict(config, {}, pose) == "ok");
+        pose.pitch = 4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "too_low");
+    }
+    SUBCASE("1.9 m is too_low at pitch -4 degrees") {
+        pose = hover(1.9);
+        pose.pitch = -4.0 * kDegree;
+        CHECK(verdict(config, {}, pose) == "too_low");
+    }
+    SUBCASE("2 m passes with the camera at the centre and is too_low with it 0.3 m forward") {
+        pose = hover(2.0);
+        CHECK(verdict(config, {}, pose) == "ok");
+        Config forward = config;
+        forward.camera.t_cam = {0.3, 0.0, 0.0};
+        CHECK(verdict(forward, {}, pose) == "too_low");
+    }
+    // 相機往前 0.3 m，後面的角離相機 1.55 m。抬頭（pitch > 0）時相機往前看，後面的角更偏
+    SUBCASE("camera 0.3 m forward at 2.3 m: pitch -4 degrees passes, pitch 4 degrees is too_low") {
+        Config forward = config;
+        forward.camera.t_cam = {0.3, 0.0, 0.0};
+        pose = hover(2.3);
+        pose.pitch = -4.0 * kDegree;
+        CHECK(verdict(forward, {}, pose) == "ok");
+        pose.pitch = 4.0 * kDegree;
+        CHECK(verdict(forward, {}, pose) == "too_low");
+    }
+    // 相機往右 0.6 m，左邊的角離相機 1.85 m（hfov/2 ≈ 43.5°）。右邊往下（roll > 0）時機腹朝左，相機往左看
+    SUBCASE("camera 0.6 m right at 2.1 m: roll 4 degrees passes, roll -4 degrees is too_low") {
+        Config right = config;
+        right.camera.t_cam = {0.0, 0.6, 0.0};
+        pose = hover(2.1);
+        pose.roll = 4.0 * kDegree;
+        CHECK(verdict(right, {}, pose) == "ok");
+        pose.roll = -4.0 * kDegree;
+        CHECK(verdict(right, {}, pose) == "too_low");
+    }
+}
+
+// 視野夠寬時四個角在 0.2 m 也看得到，仍因為 agl < 0.3 m 是 too_low
+TEST_CASE("drop check: closer than the minimum distance is too_low") {
+    Config config = load_config(kConfigPath);
+    config.camera.depth.fx = config.camera.depth.fy = 8.0;
+    config.camera.rgb.fx = config.camera.rgb.fy = 32.0;
+    SUBCASE("0.2 m is too_low") { CHECK(verdict(config, {}, hover(0.2)) == "too_low"); }
+    SUBCASE("0.5 m passes") { CHECK(verdict(config, {}, hover(0.5)) == "ok"); }
+}
+
+// 一幀依序檢查 tilted → moving → too_high／too_low → evaluate，第一個成立的就是這一幀的原因（§7）
+TEST_CASE("drop check: each frame reports the first check that fails") {
+    const Config config = load_config(kConfigPath);
+    SUBCASE("tilted and moving is tilted") {
+        Pose pose = hover(3.0);
+        pose.roll = 6.0 * kDegree;
+        const std::vector<std::vector<std::uint16_t>> flat(
+            static_cast<std::size_t>(config.drop_check.frames), synthetic::synthesize_depth({}, config.camera, pose));
+        CHECK(verdict_of(config, drop_check(config, pose, flat, 1.0, 0.0)) == "tilted");
+    }
+    SUBCASE("moving and too high is moving") {
+        const Pose pose = hover(7.5);
+        const std::vector<std::vector<std::uint16_t>> flat(
+            static_cast<std::size_t>(config.drop_check.frames), synthetic::synthesize_depth({}, config.camera, pose));
+        CHECK(verdict_of(config, drop_check(config, pose, flat, 1.0, 0.0)) == "moving");
+    }
+}
 
 // 0.5 × 0.5 m 的坑對齊細格，在 Z 正中央的 2×2 格
 TEST_CASE("drop check: a pit in the middle of Z") {
@@ -422,6 +610,165 @@ TEST_CASE("drop check: only frames after the request count, each frame_id once")
     CHECK_FALSE(core.on_depth(frame_of(config, 21, flat), at(0)).drop_check.has_value());
 }
 
+// 收幀途中又收到 check_request：只跟等待中的確認比，比它大才取代（§7、05 的決定 O1）
+TEST_CASE("drop check: a second request while frames are being collected") {
+    const Config config = load_config(kConfigPath);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, hover(3.0));
+    DecisionCore core(config);
+    core.on_attitude({0, 0.0, 0.0, 0.0}, at(0));
+    core.on_position({0, 0.0, 0.0, -3.0, 0.0, 0.0}, at(0));
+    std::uint32_t id = 0;
+    // 送 count 幀，回傳有結果的那些
+    const auto send = [&](int count) {
+        std::vector<DropCheck> results;
+        for (int i = 0; i < count; ++i) {
+            ++id;
+            if (std::optional<DropCheck> result = core.on_depth(frame_of(config, id, flat), at(0)).drop_check) {
+                results.push_back(*result);
+            }
+        }
+        return results;
+    };
+    core.on_check_request({9}, at(0));
+    CHECK(send(4).empty());
+
+    SUBCASE("a smaller request_id does not replace it") {
+        core.on_check_request({7}, at(0));
+        const std::vector<DropCheck> results = send(10);
+        REQUIRE(results.size() == 1);
+        CHECK(results[0].request_id == 9);
+        REQUIRE(results[0].frames.size() == 10);
+        CHECK(results[0].frames.front().frame_id == 1);
+        CHECK(results[0].frames.back().frame_id == 10);
+    }
+    SUBCASE("a larger request_id replaces it, and only the new one has a result") {
+        core.on_check_request({11}, at(0));
+        const std::vector<DropCheck> results = send(14);
+        REQUIRE(results.size() == 1);
+        CHECK(results[0].request_id == 11);
+        REQUIRE(results[0].frames.size() == 10);
+        CHECK(results[0].frames.front().frame_id == 5);
+        CHECK(results[0].frames.back().frame_id == 14);
+    }
+    // 去重和結果快取在 M2，核心不記得已算完的 request_id
+    SUBCASE("once it has a result, a smaller request_id starts a new check") {
+        REQUIRE(send(6).size() == 1);
+        core.on_check_request({3}, at(0));
+        const std::vector<DropCheck> results = send(10);
+        REQUIRE(results.size() == 1);
+        CHECK(results[0].request_id == 3);
+        CHECK(results[0].frames.front().frame_id == 11);
+    }
+    // server 沒收到 ack 每 300 ms 重送一次，不能每次都清掉已收的幀
+    SUBCASE("the same request_id sent again keeps the frames already collected") {
+        core.on_check_request({9}, at(0));
+        const std::vector<DropCheck> results = send(10);
+        REQUIRE(results.size() == 1);
+        CHECK(results[0].request_id == 9);
+        REQUIRE(results[0].frames.size() == 10);
+        CHECK(results[0].frames.front().frame_id == 1);
+        CHECK(results[0].frames.back().frame_id == 10);
+    }
+}
+
+// 深度 5 FPS：請求後 200、400、…、1400 ms 收到 7 幀（前 2 幀是坑），1.5 秒（本機時鐘）收不滿 10 幀
+TEST_CASE("drop check: not enough frames within 1.5 s is no_depth") {
+    const Config config = load_config(kConfigPath);
+    const Pose pose = hover(3.0);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, pose);
+    Scene pit;
+    pit.pits.push_back(centre_pit(0.5));
+    const std::vector<std::uint16_t> hole = synthetic::synthesize_depth(pit, config.camera, pose);
+    DecisionCore core(config);
+    core.on_check_request({4}, at(0));
+    for (std::uint32_t id = 1; id <= 7; ++id) {
+        const Now now = at(200 * static_cast<int>(id));
+        core.on_attitude({200 * id, 0.0, 0.0, 0.0}, now);
+        core.on_position({200 * id, 0.0, 0.0, pose.down_m, 0.0, 0.0}, now);
+        const DepthFrame frame = frame_of(config, id, id <= 2 ? hole : flat, 200u * id);
+        REQUIRE_FALSE(core.on_depth(frame, now).drop_check.has_value());
+    }
+    CHECK_FALSE(core.on_tick(at(1499)).drop_check.has_value());
+
+    const std::optional<DropCheck> result = core.on_tick(at(1500)).drop_check;
+    REQUIRE(result.has_value());
+    CHECK(result->request_id == 4);
+    CHECK_FALSE(result->ok);
+    CHECK(name(result->reason) == "no_depth");
+    CHECK(result->counts == std::map<CheckReason, int>{{CheckReason::hole, 2}});
+    CHECK(result->frame_timestamp == 1400);
+    CHECK(result->frames.size() == 7);
+}
+
+// §9.2：從沒收過深度幀時 frame_timestamp 是空的
+TEST_CASE("drop check: no depth frame at all is no_depth without a frame_timestamp") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    core.on_check_request({1}, at(0));
+    const std::optional<DropCheck> result = core.on_tick(at(1500)).drop_check;
+    REQUIRE(result.has_value());
+    CHECK(name(result->reason) == "no_depth");
+    CHECK_FALSE(result->frame_timestamp.has_value());
+    CHECK(result->counts.empty());
+    CHECK(result->frames.empty());
+}
+
+// 還沒收過 PX4 時深度幀不能用，期限到了一樣回 no_depth
+TEST_CASE("drop check: a frame without PX4 data still answers no_depth once 1.5 s have passed") {
+    const Config config = load_config(kConfigPath);
+    DecisionCore core(config);
+    core.on_check_request({1}, at(0));
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, hover(3.0));
+    const Results results =
+        core.on_depth(frame_of(config, 1, flat, 100), at(1500));
+    REQUIRE(results.drop_check.has_value());
+    CHECK(name(results.drop_check->reason) == "no_depth");
+}
+
+// 1.5 秒的期限每個事件都檢查：請求後 100～900 ms 收到 9 幀，1.5 秒時的第一個事件就回 no_depth
+TEST_CASE("drop check: every event answers no_depth once 1.5 s have passed") {
+    const Config config = load_config(kConfigPath);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, hover(3.0));
+    DecisionCore core(config);
+    core.on_check_request({6}, at(0));
+    for (std::uint32_t id = 1; id <= 9; ++id) {
+        const Now now = at(100 * static_cast<int>(id));
+        core.on_attitude({100 * id, 0.0, 0.0, 0.0}, now);
+        core.on_position({100 * id, 0.0, 0.0, -3.0, 0.0, 0.0}, now);
+        REQUIRE_FALSE(core.on_depth(frame_of(config, id, flat, 100u * id), now).drop_check.has_value());
+    }
+    Results results;
+    SUBCASE("a 10th frame that arrives at 1.5 s does not count") {
+        core.on_attitude({1000, 0.0, 0.0, 0.0}, at(1000));
+        core.on_position({1000, 0.0, 0.0, -3.0, 0.0, 0.0}, at(1000));
+        results = core.on_depth(frame_of(config, 10, flat, 1000), at(1500));
+    }
+    SUBCASE("attitude") { results = core.on_attitude({1000, 0.0, 0.0, 0.0}, at(1500)); }
+    SUBCASE("an attitude that is not accepted") { results = core.on_attitude({1000, 1e9, 0.0, 0.0}, at(1500)); }
+    SUBCASE("a frame whose time cannot be interpolated") {
+        results = core.on_depth(frame_of(config, 10, flat, 5000), at(1500));
+    }
+    SUBCASE("position") { results = core.on_position({1000, 0.0, 0.0, -3.0, 0.0, 0.0}, at(1500)); }
+    SUBCASE("a check request with a smaller request_id") {
+        results = core.on_check_request({2}, at(1500));
+        // 舊的已經到期，新的照常開始收幀
+        std::optional<DropCheck> next;
+        for (std::uint32_t id = 10; id <= 19; ++id) {
+            core.on_attitude({100 * id, 0.0, 0.0, 0.0}, at(1500));
+            core.on_position({100 * id, 0.0, 0.0, -3.0, 0.0, 0.0}, at(1500));
+            next = core.on_depth(frame_of(config, id, flat, 100u * id), at(1500)).drop_check;
+        }
+        REQUIRE(next.has_value());
+        CHECK(next->request_id == 2);
+        CHECK(next->ok);
+    }
+    REQUIRE(results.drop_check.has_value());
+    CHECK(results.drop_check->request_id == 6);
+    CHECK(name(results.drop_check->reason) == "no_depth");
+    CHECK(results.drop_check->frames.size() == 9);
+    CHECK(results.drop_check->counts.empty());
+}
+
 TEST_CASE("drop check: when every frame fails the same way, counts has that reason for all frames") {
     const Config config = load_config(kConfigPath);
     Scene scene;
@@ -485,6 +832,69 @@ TEST_CASE("drop check: frames that disagree are merged") {
     }
 }
 
+// 飛行狀態的原因也照 §7 合併。平手的順序 invalid_depth > too_low > too_high > tilted > moving，
+// 每一對相鄰的都跑兩種順序：贏是因為優先順序，不是因為先到或後到
+TEST_CASE("drop check: flight state reasons are merged with the same rule") {
+    const Config config = load_config(kConfigPath);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, hover(3.0));
+    const std::vector<std::uint16_t> high = synthetic::synthesize_depth({}, config.camera, hover(7.5));
+    const std::vector<std::uint16_t> low = synthetic::synthesize_depth({}, config.camera, hover(1.5));
+    const std::vector<std::uint16_t> beyond = synthetic::synthesize_depth({}, config.camera, hover(25.0));
+    struct Frame {
+        const std::vector<std::uint16_t>* depth;
+        double roll;
+        double vx;
+    };
+    const Frame ok{&flat, 0.0, 0.0};
+    const Frame tilted{&flat, 6.0 * kDegree, 0.0};
+    const Frame moving{&flat, 0.0, 1.0};
+    const Frame too_high{&high, 0.0, 0.0};
+    const Frame too_low{&low, 0.0, 0.0};
+    const Frame invalid{&beyond, 0.0, 0.0};
+    // 第 k 幀（sim time k·100 ms）之前送剛好在那個時間的姿態和位置
+    const auto check = [&](std::initializer_list<std::pair<int, Frame>> runs) {
+        DecisionCore core(config);
+        core.on_check_request({5}, at(0));
+        std::optional<DropCheck> result;
+        std::uint32_t id = 0;
+        for (const auto& [count, frame] : runs) {
+            for (int i = 0; i < count; ++i) {
+                ++id;
+                core.on_attitude({100 * id, frame.roll, 0.0, 0.0}, at(0));
+                core.on_position({100 * id, 0.0, 0.0, -3.0, frame.vx, 0.0}, at(0));
+                result = core.on_depth(frame_of(config, id, *frame.depth, 100u * id), at(0)).drop_check;
+            }
+        }
+        REQUIRE(id == 10);
+        REQUIRE(result.has_value());
+        return *result;
+    };
+    const auto wins = [&](const Frame& first, const Frame& second, CheckReason winner, CheckReason loser) {
+        for (const DropCheck& result : {check({{3, first}, {3, second}, {4, ok}}),
+                                        check({{3, second}, {3, first}, {4, ok}})}) {
+            CHECK_FALSE(result.ok);
+            CHECK(name(result.reason) == name(winner));
+            CHECK(result.counts == std::map<CheckReason, int>{{winner, 3}, {loser, 3}});
+        }
+    };
+
+    SUBCASE("8 passing and 2 tilted frames pass") {
+        const DropCheck result = check({{2, tilted}, {8, ok}});
+        CHECK(result.ok);
+        CHECK(result.counts.empty());
+    }
+    SUBCASE("7 passing and 3 moving frames are moving") {
+        const DropCheck result = check({{3, moving}, {7, ok}});
+        CHECK_FALSE(result.ok);
+        CHECK(name(result.reason) == "moving");
+        CHECK(result.counts == std::map<CheckReason, int>{{CheckReason::moving, 3}});
+    }
+    SUBCASE("invalid_depth beats too_low") { wins(invalid, too_low, CheckReason::invalid_depth, CheckReason::too_low); }
+    SUBCASE("too_low beats too_high") { wins(too_low, too_high, CheckReason::too_low, CheckReason::too_high); }
+    SUBCASE("too_high beats tilted") { wins(too_high, tilted, CheckReason::too_high, CheckReason::tilted); }
+    SUBCASE("tilted beats moving") { wins(tilted, moving, CheckReason::tilted, CheckReason::moving); }
+}
+
 // 3 m 高時每格 7 × 7 個像素。2×2 格每格 30 個改成 0：剩 19 個有效點，但無效比例 61%
 TEST_CASE("drop check: cells with more than half of their pixels invalid are UNKNOWN") {
     const Config config = load_config(kConfigPath);
@@ -499,9 +909,11 @@ TEST_CASE("drop check: cells with more than half of their pixels invalid are UNK
     CHECK(verdict(config, hover(3.0), depth) == "hole");
 }
 
-// 10.5 m 高時每格 2 × 2 個像素。2×2 格每格改 2 個成 0：剩 2 個有效點，無效比例剛好 50%
+// 10.5 m 高時每格 2 × 2 個像素。2×2 格每格改 2 個成 0：剩 2 個有效點，無效比例剛好 50%。
+// 高度只是為了每格的像素少，投放高度上限放寬到 11 m，才不會先判 too_high
 TEST_CASE("drop check: cells with fewer than 3 valid points are UNKNOWN") {
-    const Config config = load_config(kConfigPath);
+    Config config = load_config(kConfigPath);
+    config.drop_check.drop_max_height_m = 11.0;
     std::vector<std::uint16_t> depth = synthetic::synthesize_depth({}, config.camera, hover(10.5));
     for (const auto& [ix, iy] : {std::pair{0, 0}, {0, 1}, {1, 0}, {1, 1}}) {
         const std::vector<std::size_t> pixels = pixels_in(config, 10.5, ix, iy);
@@ -620,28 +1032,4 @@ TEST_CASE("drop check: the plane fit handles cells missing along a diagonal") {
                        pixels_over(config, 3.0, -0.25, 0.0, 0.0, 0.25),
                        pixels_over(config, 3.0, -0.5, -0.25, 0.25, 0.5)};
     CHECK(verdict(config, scene, hover(3.0), options) == "invalid_depth");
-}
-
-// 收幀途中按第二次（較大的 request_id）：之前收的幀不算，只回新的
-TEST_CASE("drop check: a newer request during collection starts over") {
-    const Config config = load_config(kConfigPath);
-    const Pose pose = hover(3.0);
-    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, pose);
-
-    DecisionCore core(config);
-    core.on_attitude({0, 0.0, 0.0, 0.0}, at(0));
-    core.on_position({0, 0.0, 0.0, pose.down_m, 0.0, 0.0}, at(0));
-    core.on_check_request({8}, at(0));
-    for (std::uint32_t id = 1; id <= 5; ++id) {
-        CHECK_FALSE(core.on_depth(frame_of(config, id, flat), at(0)).drop_check.has_value());
-    }
-    core.on_check_request({9}, at(0));
-    for (std::uint32_t id = 6; id <= 14; ++id) {
-        CHECK_FALSE(core.on_depth(frame_of(config, id, flat), at(0)).drop_check.has_value());
-    }
-    const std::optional<DropCheck> result = core.on_depth(frame_of(config, 15, flat), at(0)).drop_check;
-    REQUIRE(result.has_value());
-    CHECK(result->request_id == 9);
-    REQUIRE(result->frames.size() == 10);
-    CHECK(result->frames.front().frame_id == 6);
 }

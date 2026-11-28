@@ -75,6 +75,7 @@ M3、M4 **不用等板子**，M5 **不用等 M3、M4**（可以先用回放程�
 - [ ] MAVLink 接收：`ATTITUDE`、`LOCAL_POSITION_NED`（含 vx、vy）（§4、§5）
 - [ ] 資料過期：M1 的規則接上真的 TCP、MAVLink（§5）
 - [ ] UDP＋JSON：`ack`、重送、去重、`session_id`、結果快取、heartbeat（§9）
+  - `session_id` 換了要能清掉核心等待中的確認：核心收幀途中只認比等待中更大的 `request_id`（M1 05 的 O1），server 在 1.5 秒內重啟時，新 session 從 1 開始的請求會被丟掉。做法（核心加 reset，或請求帶 `session_id`）跟 server 的協定一起定（05 review 的 AD1）
 - [ ] 回放紀錄：存深度、姿態、判斷結果，格式跟回放程式一起定（§14）
 - [ ] 回放程式：用同樣格式送 TCP 深度和 MAVLink，內容是合成深度或錄檔
 - [ ] 假的 server：送 `suggest_request`／`check_request`，可以故意掉包

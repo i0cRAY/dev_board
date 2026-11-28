@@ -650,6 +650,71 @@ TEST_CASE("drop check: frames that disagree are merged") {
     }
 }
 
+// 飛行狀態的原因也照 §7 合併。平手的順序 invalid_depth > too_low > too_high > tilted > moving，
+// 每一對相鄰的都跑兩種順序：贏是因為優先順序，不是因為先到或後到
+TEST_CASE("drop check: flight state reasons are merged with the same rule") {
+    const Config config = load_config(kConfigPath);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, hover(3.0));
+    const std::vector<std::uint16_t> high = synthetic::synthesize_depth({}, config.camera, hover(7.5));
+    const std::vector<std::uint16_t> low = synthetic::synthesize_depth({}, config.camera, hover(1.5));
+    const std::vector<std::uint16_t> beyond = synthetic::synthesize_depth({}, config.camera, hover(25.0));
+    struct Frame {
+        const std::vector<std::uint16_t>* depth;
+        double roll;
+        double vx;
+    };
+    const Frame ok{&flat, 0.0, 0.0};
+    const Frame tilted{&flat, 6.0 * kDegree, 0.0};
+    const Frame moving{&flat, 0.0, 1.0};
+    const Frame too_high{&high, 0.0, 0.0};
+    const Frame too_low{&low, 0.0, 0.0};
+    const Frame invalid{&beyond, 0.0, 0.0};
+    // 第 k 幀（sim time k·100 ms）之前送剛好在那個時間的姿態和位置
+    const auto check = [&](std::initializer_list<std::pair<int, Frame>> runs) {
+        DecisionCore core(config);
+        core.on_check_request({5}, at(0));
+        std::optional<DropCheck> result;
+        std::uint32_t id = 0;
+        for (const auto& [count, frame] : runs) {
+            for (int i = 0; i < count; ++i) {
+                ++id;
+                core.on_attitude({100 * id, frame.roll, 0.0, 0.0}, at(0));
+                core.on_position({100 * id, 0.0, 0.0, -3.0, frame.vx, 0.0}, at(0));
+                result = core.on_depth(
+                    {id, 100u * id, config.camera.depth.width, config.camera.depth.height, *frame.depth}, at(0))
+                             .drop_check;
+            }
+        }
+        REQUIRE(id == 10);
+        REQUIRE(result.has_value());
+        return *result;
+    };
+    const auto wins = [&](const Frame& first, const Frame& second, CheckReason winner, CheckReason loser) {
+        for (const DropCheck& result : {check({{3, first}, {3, second}, {4, ok}}),
+                                        check({{3, second}, {3, first}, {4, ok}})}) {
+            CHECK_FALSE(result.ok);
+            CHECK(name(result.reason) == name(winner));
+            CHECK(result.counts == std::map<CheckReason, int>{{winner, 3}, {loser, 3}});
+        }
+    };
+
+    SUBCASE("8 passing and 2 tilted frames pass") {
+        const DropCheck result = check({{2, tilted}, {8, ok}});
+        CHECK(result.ok);
+        CHECK(result.counts.empty());
+    }
+    SUBCASE("7 passing and 3 moving frames are moving") {
+        const DropCheck result = check({{3, moving}, {7, ok}});
+        CHECK_FALSE(result.ok);
+        CHECK(name(result.reason) == "moving");
+        CHECK(result.counts == std::map<CheckReason, int>{{CheckReason::moving, 3}});
+    }
+    SUBCASE("invalid_depth beats too_low") { wins(invalid, too_low, CheckReason::invalid_depth, CheckReason::too_low); }
+    SUBCASE("too_low beats too_high") { wins(too_low, too_high, CheckReason::too_low, CheckReason::too_high); }
+    SUBCASE("too_high beats tilted") { wins(too_high, tilted, CheckReason::too_high, CheckReason::tilted); }
+    SUBCASE("tilted beats moving") { wins(tilted, moving, CheckReason::tilted, CheckReason::moving); }
+}
+
 // 3 m 高時每格 7 × 7 個像素。2×2 格每格 30 個改成 0：剩 19 個有效點，但無效比例 61%
 TEST_CASE("drop check: cells with more than half of their pixels invalid are UNKNOWN") {
     const Config config = load_config(kConfigPath);

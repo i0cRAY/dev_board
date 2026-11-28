@@ -44,6 +44,9 @@ synthetic::PixelRect pixels_over(const Config& config, double height_m, double x
     return {u0, v0, u1 - u0, v1 - v0};
 }
 
+// 0.5 × 0.5 m 的坑對齊細格，在 Z 正中央的 2×2 格
+synthetic::Pit centre_pit(double depth_m) { return {{-0.25, 0.25, -0.25, 0.25}, depth_m}; }
+
 std::string name(const std::optional<CheckReason>& reason) {
     if (!reason) {
         return "ok";
@@ -170,17 +173,17 @@ TEST_CASE("drop check: a pit in the middle of Z") {
     const Config config = load_config(kConfigPath);
     Scene scene;
     SUBCASE("0.3 m deep is rough") {
-        scene.pits.push_back({{-0.25, 0.25, -0.25, 0.25}, 0.3});
+        scene.pits.push_back(centre_pit(0.3));
         CHECK(verdict(config, scene, hover(3.0)) == "rough");
     }
     SUBCASE("0.3 m deep passes when the depth noise accounts for the roughness") {
         Config noisy = config;
         noisy.evaluate.depth_noise_m = 0.1;
-        scene.pits.push_back({{-0.25, 0.25, -0.25, 0.25}, 0.3});
+        scene.pits.push_back(centre_pit(0.3));
         CHECK(verdict(noisy, scene, hover(3.0)) == "ok");
     }
     SUBCASE("0.5 m deep is a hole") {
-        scene.pits.push_back({{-0.25, 0.25, -0.25, 0.25}, 0.5});
+        scene.pits.push_back(centre_pit(0.5));
         CHECK(verdict(config, scene, hover(3.0)) == "hole");
     }
 }
@@ -394,7 +397,7 @@ TEST_CASE("drop check: only frames after the request count, each frame_id once")
     const Config config = load_config(kConfigPath);
     const Pose pose = hover(3.0);
     Scene pit;
-    pit.pits.push_back({{-0.25, 0.25, -0.25, 0.25}, 0.5});
+    pit.pits.push_back(centre_pit(0.5));
     const std::vector<std::uint16_t> before = synthetic::synthesize_depth(pit, config.camera, pose);
     const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, pose);
 
@@ -422,7 +425,7 @@ TEST_CASE("drop check: only frames after the request count, each frame_id once")
 TEST_CASE("drop check: when every frame fails the same way, counts has that reason for all frames") {
     const Config config = load_config(kConfigPath);
     Scene scene;
-    scene.pits.push_back({{-0.25, 0.25, -0.25, 0.25}, 0.5});
+    scene.pits.push_back(centre_pit(0.5));
     const std::optional<DropCheck> result = drop_check(config, scene, hover(3.0));
     REQUIRE(result.has_value());
     CHECK_FALSE(result->ok);
@@ -435,7 +438,7 @@ TEST_CASE("drop check: frames that disagree are merged") {
     const Pose pose = hover(3.0);
     const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, pose);
     Scene pit;
-    pit.pits.push_back({{-0.25, 0.25, -0.25, 0.25}, 0.5});
+    pit.pits.push_back(centre_pit(0.5));
     const std::vector<std::uint16_t> hole = synthetic::synthesize_depth(pit, config.camera, pose);
     Scene slope;
     slope.rise_per_east = std::tan(11.0 * kDegree);

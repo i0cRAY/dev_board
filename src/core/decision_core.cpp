@@ -105,8 +105,7 @@ private:
 // 細格涵蓋 Z、外圈和外圈外面一格
 terrain::Grid DecisionCore::project(const DepthFrame& frame, const Attitude& attitude) const {
     const Tilt tilt(attitude);
-    const auto rotate = [&](const Vec3& b) { return tilt.to_horizontal(b); };
-    const Vec3 o = rotate(config_.camera.t_cam);
+    const Vec3 o = tilt.to_horizontal(config_.camera.t_cam);
 
     terrain::Grid grid(config_.zone.width_cells / 2 + config_.zone.ring_cells + 1, config_.grid.cell_size_m);
     const Intrinsics& k = config_.camera.depth;
@@ -119,7 +118,7 @@ terrain::Grid DecisionCore::project(const DepthFrame& frame, const Attitude& att
             }
             const double z = mm / 1000.0;
             // 相機光學座標 → 機身 FRD：(x_b, y_b, z_b) = (−y_c, x_c, z_c)
-            const Vec3 q = rotate({-z * ray_y_[v], z * ray_x_[u], z});
+            const Vec3 q = tilt.to_horizontal({-z * ray_y_[v], z * ray_x_[u], z});
             grid.add_valid(q[0] + o[0], q[1] + o[1], -q[2]);  // h 不加 o.z，從相機量起
             heights.push_back(-q[2]);
         }
@@ -135,7 +134,7 @@ terrain::Grid DecisionCore::project(const DepthFrame& frame, const Attitude& att
             if (frame.depth_mm[static_cast<std::size_t>(v) * k.width + u] != 0) {
                 continue;
             }
-            const Vec3 d = rotate({-ray_y_[v], ray_x_[u], 1.0});
+            const Vec3 d = tilt.to_horizontal({-ray_y_[v], ray_x_[u], 1.0});
             const double z = -h_med / d[2];
             if (!(d[2] > 0.0 && z > 0.0)) {
                 continue;
@@ -205,13 +204,13 @@ Results DecisionCore::on_depth(const DepthFrame& frame, Now now) {
     Attitude at_frame = *attitude->before;
     at_frame.roll = lerp(attitude->before->roll, attitude->after->roll, attitude->a);
     at_frame.pitch = lerp(attitude->before->pitch, attitude->after->pitch, attitude->a);
-    Position moving_at = *position->before;
-    moving_at.vx_mps = lerp(position->before->vx_mps, position->after->vx_mps, position->a);
-    moving_at.vy_mps = lerp(position->before->vy_mps, position->after->vy_mps, position->a);
+    Position position_at_frame = *position->before;
+    position_at_frame.vx_mps = lerp(position->before->vx_mps, position->after->vx_mps, position->a);
+    position_at_frame.vy_mps = lerp(position->before->vy_mps, position->after->vy_mps, position->a);
     const terrain::Grid grid = project(frame, at_frame);
     const std::optional<double> height = terrain::agl(grid, config_.zone.width_cells);
     if (check_) {
-        check = collect(frame, check_frame(grid, height, at_frame, moving_at));
+        check = collect(frame, check_frame(grid, height, at_frame, position_at_frame));
     }
     return {Height{height, DataState::ok}, check};
 }
@@ -229,8 +228,8 @@ Results DecisionCore::on_check_request(const CheckRequest& request, Now now) {
 // §7 每幀一個結果：依序檢查，第一個成立的就是這一幀的原因
 std::optional<CheckReason> DecisionCore::check_frame(const terrain::Grid& grid, std::optional<double> agl,
                                                      const Attitude& attitude, const Position& position) const {
-    const double tilt = std::acos(std::cos(attitude.roll) * std::cos(attitude.pitch));
-    if (tilt > config_.limits.max_tilt_deg * kDegree) {
+    const double tilt_angle = std::acos(std::cos(attitude.roll) * std::cos(attitude.pitch));
+    if (tilt_angle > config_.limits.max_tilt_deg * kDegree) {
         return CheckReason::tilted;
     }
     if (std::hypot(position.vx_mps, position.vy_mps) > config_.drop_check.max_speed_mps) {
@@ -282,10 +281,7 @@ std::optional<DropCheck> DecisionCore::collect(const DepthFrame& frame, std::opt
     // §7：合格幀數 ≥ min_pass 就合格；否則取最多的原因，平手時取排前面的（CheckReason 的順序）
     DropCheck result{check_->request_id, frame.timestamp_ms, true, std::nullopt, {}, frames};
     const std::map<CheckReason, int> counts = count_reasons(frames);
-    int passed = static_cast<int>(frames.size());
-    for (const auto& [reason_of, count] : counts) {
-        passed -= count;
-    }
+    const auto passed = std::count_if(frames.begin(), frames.end(), [](const FrameCheck& f) { return !f.reason; });
     if (passed < config_.drop_check.min_pass) {
         result.ok = false;
         result.counts = counts;

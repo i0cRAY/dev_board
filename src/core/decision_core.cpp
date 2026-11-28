@@ -6,20 +6,16 @@
 #include <cstddef>
 #include <stdexcept>
 
+#include "core/angle.h"
+#include "core/terrain.h"
+
 namespace dev_board {
 namespace {
 
 using Vec3 = std::array<double, 3>;
 
-constexpr double kPi = 3.14159265358979323846;
 // 角度的上限多留一點：MAVLink 是 float，最接近 π 的 float 比 double 的 π 大約 9e-8
 constexpr double kMaxAngle = kPi + 1e-6;
-
-// 一個細格裡的有效點
-struct Cell {
-    int valid = 0;
-    double sum_h = 0.0;
-};
 
 // 依 sim time 排好的 PX4 緩衝，加入時丟掉比最新一筆早超過 keep_ms 的
 template <class Sample>
@@ -63,14 +59,61 @@ std::optional<Bracket<Sample>> bracket(const std::vector<Sample>& buffer, std::i
 
 double lerp(double from, double to, double a) { return from + a * (to - from); }
 
-// 偶數個時取中間兩個的平均（§6.1）
-double median(std::vector<double> values) {
-    std::sort(values.begin(), values.end());
-    const std::size_t mid = values.size() / 2;
-    return values.size() % 2 == 1 ? values[mid] : (values[mid - 1] + values[mid]) / 2.0;
-}
-
 }  // namespace
+
+// §5 第 3～7 步：把每個有效點放進細格，無效像素沿射線打到中位數高度的水平面，算進落點那格的無效數。
+// 細格涵蓋 Z、外圈和外圈外面一格
+terrain::Grid DecisionCore::project(const DepthFrame& frame, const Attitude& attitude) const {
+    const double cr = std::cos(attitude.roll);
+    const double sr = std::sin(attitude.roll);
+    const double cp = std::cos(attitude.pitch);
+    const double sp = std::sin(attitude.pitch);
+    // 機身 FRD → 水平座標系：R = Ry(pitch)·Rx(roll)
+    const auto rotate = [&](const Vec3& b) -> Vec3 {
+        const double y = cr * b[1] - sr * b[2];
+        const double z = sr * b[1] + cr * b[2];
+        return {cp * b[0] + sp * z, y, cp * z - sp * b[0]};
+    };
+    const Vec3 o = rotate(config_.camera.t_cam);
+
+    terrain::Grid grid(config_.zone.width_cells / 2 + config_.zone.ring_cells + 1, config_.grid.cell_size_m);
+    const Intrinsics& k = config_.camera.depth;
+    std::vector<double> heights;
+    for (int v = 0; v < k.height; ++v) {
+        for (int u = 0; u < k.width; ++u) {
+            const std::uint16_t mm = frame.depth_mm[static_cast<std::size_t>(v) * k.width + u];
+            if (mm == 0) {
+                continue;
+            }
+            const double z = mm / 1000.0;
+            // 相機光學座標 → 機身 FRD：(x_b, y_b, z_b) = (−y_c, x_c, z_c)
+            const Vec3 q = rotate({-z * ray_y_[v], z * ray_x_[u], z});
+            grid.add_valid(q[0] + o[0], q[1] + o[1], -q[2]);  // h 不加 o.z，從相機量起
+            heights.push_back(-q[2]);
+        }
+    }
+    if (heights.empty()) {
+        return grid;  // 沒有中位數：所有細格都是 0 個點，沒有 h20 要算
+    }
+
+    // 第 7 步：深度 1 的射線方向打到 h = h_med，要往下（d.z > 0）而且 h_med 在相機下面才打得到
+    const double h_med = terrain::median(heights);
+    for (int v = 0; v < k.height; ++v) {
+        for (int u = 0; u < k.width; ++u) {
+            if (frame.depth_mm[static_cast<std::size_t>(v) * k.width + u] != 0) {
+                continue;
+            }
+            const Vec3 d = rotate({-ray_y_[v], ray_x_[u], 1.0});
+            const double z = -h_med / d[2];
+            if (!(d[2] > 0.0 && z > 0.0)) {
+                continue;
+            }
+            grid.add_invalid(z * d[0] + o[0], z * d[1] + o[1]);
+        }
+    }
+    grid.finish(config_.evaluate.low_percentile);
+    return grid;
+}
 
 DecisionCore::DecisionCore(const Config& config) : config_(config) {
     const Intrinsics& k = config_.camera.depth;
@@ -108,7 +151,7 @@ Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
     depth_seen_ = true;
     const DataState now_state = state();
     if (now_state != DataState::ok) {
-        return {Height{std::nullopt, now_state}};
+        return {Height{std::nullopt, now_state}, {}};
     }
     // 03 只用到 roll、pitch；位置要夾得住才算能用。yaw、位置、速度的內插在第一個用到的 ticket 做
     const std::int64_t t = static_cast<std::int64_t>(frame.timestamp_ms);
@@ -119,13 +162,60 @@ Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
     Attitude at_frame = *attitude->before;
     at_frame.roll = lerp(attitude->before->roll, attitude->after->roll, attitude->a);
     at_frame.pitch = lerp(attitude->before->pitch, attitude->after->pitch, attitude->a);
-    return {Height{agl(frame, at_frame), DataState::ok}};
+    const terrain::Grid grid = project(frame, at_frame);
+    const std::optional<double> height = terrain::agl(grid, config_.zone.width_cells);
+    std::optional<DropCheck> check;
+    if (check_) {
+        check = collect(frame, terrain::evaluate(grid, config_));
+    }
+    return {Height{height, DataState::ok}, check};
+}
+
+Results DecisionCore::on_check_request(const CheckRequest& request, Now) {
+    check_ = PendingCheck{request.request_id, {}};
+    return {};
+}
+
+// 收進確認中的一幀；同一個 frame_id 只算一次。收滿時照 §7 合併
+std::optional<DropCheck> DecisionCore::collect(const DepthFrame& frame, std::optional<CheckReason> reason) {
+    if (!check_) {
+        return std::nullopt;
+    }
+    std::vector<FrameCheck>& frames = check_->frames;
+    if (std::any_of(frames.begin(), frames.end(),
+                    [&](const FrameCheck& f) { return f.frame_id == frame.frame_id; })) {
+        return std::nullopt;
+    }
+    frames.push_back({frame.frame_id, reason});
+    if (frames.size() < static_cast<std::size_t>(config_.drop_check.frames)) {
+        return std::nullopt;
+    }
+    // §7：合格幀數 ≥ min_pass 就合格；否則取最多的原因，平手時取排前面的（CheckReason 的順序）
+    DropCheck result{check_->request_id, frame.timestamp_ms, true, std::nullopt, {}, frames};
+    int passed = 0;
+    std::map<CheckReason, int> counts;
+    for (const FrameCheck& f : frames) {
+        if (f.reason) {
+            ++counts[*f.reason];
+        } else {
+            ++passed;
+        }
+    }
+    if (passed < config_.drop_check.min_pass) {
+        result.ok = false;
+        result.counts = counts;
+        const auto most = std::max_element(counts.begin(), counts.end(),
+                                           [](const auto& a, const auto& b) { return a.second < b.second; });
+        result.reason = most->first;
+    }
+    check_.reset();
+    return result;
 }
 
 Results DecisionCore::on_tick(Now) {
     const DataState now_state = state();
     if (now_state != DataState::ok) {
-        return {Height{std::nullopt, now_state}};
+        return {Height{std::nullopt, now_state}, {}};
     }
     return {};
 }
@@ -139,57 +229,6 @@ DataState DecisionCore::state() const {
         return DataState::no_px4;
     }
     return DataState::ok;
-}
-
-// §5 第 3～5 步把每個有效點放進正下方 Z 的細格，再照 §6.1 取中位數
-std::optional<double> DecisionCore::agl(const DepthFrame& frame, const Attitude& attitude) const {
-    const double cr = std::cos(attitude.roll);
-    const double sr = std::sin(attitude.roll);
-    const double cp = std::cos(attitude.pitch);
-    const double sp = std::sin(attitude.pitch);
-    // 機身 FRD → 水平座標系：R = Ry(pitch)·Rx(roll)
-    const auto rotate = [&](const Vec3& b) -> Vec3 {
-        const double y = cr * b[1] - sr * b[2];
-        const double z = sr * b[1] + cr * b[2];
-        return {cp * b[0] + sp * z, y, cp * z - sp * b[0]};
-    };
-    const Vec3 o = rotate(config_.camera.t_cam);
-
-    const double s = config_.grid.cell_size_m;
-    const int cells = config_.zone.width_cells;
-    const int half = cells / 2;
-    std::vector<Cell> zone(static_cast<std::size_t>(cells) * static_cast<std::size_t>(cells));
-    const Intrinsics& k = config_.camera.depth;
-    for (int v = 0; v < k.height; ++v) {
-        for (int u = 0; u < k.width; ++u) {
-            const std::uint16_t mm = frame.depth_mm[static_cast<std::size_t>(v) * k.width + u];
-            if (mm == 0) {
-                continue;
-            }
-            const double z = mm / 1000.0;
-            // 相機光學座標 → 機身 FRD：(x_b, y_b, z_b) = (−y_c, x_c, z_c)
-            const Vec3 q = rotate({-z * ray_y_[v], z * ray_x_[u], z});
-            const int ix = static_cast<int>(std::floor((q[0] + o[0]) / s)) + half;
-            const int iy = static_cast<int>(std::floor((q[1] + o[1]) / s)) + half;
-            if (ix < 0 || ix >= cells || iy < 0 || iy >= cells) {
-                continue;
-            }
-            Cell& cell = zone[static_cast<std::size_t>(ix) * cells + iy];
-            ++cell.valid;
-            cell.sum_h += -q[2];  // h 不加 o.z，從相機量起
-        }
-    }
-
-    std::vector<double> heights;
-    for (const Cell& cell : zone) {
-        if (cell.valid > 0) {
-            heights.push_back(cell.sum_h / cell.valid);
-        }
-    }
-    if (heights.size() * 2 < zone.size()) {
-        return std::nullopt;
-    }
-    return -median(heights);
 }
 
 }  // namespace dev_board

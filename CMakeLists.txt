@@ -22,7 +22,7 @@ target_include_directories(doctest SYSTEM INTERFACE third_party)
 add_library(mavlink INTERFACE)
 target_include_directories(mavlink SYSTEM INTERFACE third_party)
 
-add_library(dev_board_core STATIC src/core/config.cpp src/core/decision_core.cpp)
+add_library(dev_board_core STATIC src/core/config.cpp src/core/decision_core.cpp src/core/terrain.cpp)
 target_include_directories(dev_board_core PUBLIC src)
 target_link_libraries(dev_board_core PRIVATE nlohmann_json)
 

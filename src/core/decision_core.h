@@ -93,7 +93,9 @@ public:
     Results on_position(const Position& position, Now now);
     // 尺寸跟 config.camera.depth 不同、或 depth_mm 的長度不是 width × height 時丟 std::invalid_argument
     Results on_depth(const DepthFrame& frame, Now now);
-    // 投放前確認：用之後收到的 drop_check.frames 個不同 frame_id 的幀檢查正下方（§7）
+    // 投放前確認：用之後收到的 drop_check.frames 個不同 frame_id 的幀檢查正下方（§7）。
+    // 收幀途中只有更大的 request_id 會取代等待中的確認；比它小或相同（重送）的不理。
+    // 已算完的請求重送會重新確認：去重和結果快取由呼叫端（M2）負責
     Results on_check_request(const CheckRequest& request, Now now);
     // 時間前進。資料狀態不是 ok 時回傳空的高度
     Results on_tick(Now now);

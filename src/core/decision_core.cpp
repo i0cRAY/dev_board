@@ -197,6 +197,10 @@ Results DecisionCore::on_depth(const DepthFrame& frame, Now) {
 }
 
 Results DecisionCore::on_check_request(const CheckRequest& request, Now) {
+    // 只跟等待中的確認比：比它小或相同（重送）的不取代它（05 的決定 O1）
+    if (check_ && request.request_id <= check_->request_id) {
+        return {};
+    }
     check_ = PendingCheck{request.request_id, {}};
     return {};
 }

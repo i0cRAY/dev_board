@@ -587,6 +587,67 @@ TEST_CASE("drop check: only frames after the request count, each frame_id once")
     CHECK_FALSE(core.on_depth(frame_of(config, 21, flat), at(0)).drop_check.has_value());
 }
 
+// 收幀途中又收到 check_request：只跟等待中的確認比，比它大才取代（§7、05 的決定 O1）
+TEST_CASE("drop check: a second request while frames are being collected") {
+    const Config config = load_config(kConfigPath);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, hover(3.0));
+    DecisionCore core(config);
+    core.on_attitude({0, 0.0, 0.0, 0.0}, at(0));
+    core.on_position({0, 0.0, 0.0, -3.0, 0.0, 0.0}, at(0));
+    std::uint32_t id = 0;
+    // 送 count 幀，回傳有結果的那些
+    const auto send = [&](int count) {
+        std::vector<DropCheck> results;
+        for (int i = 0; i < count; ++i) {
+            ++id;
+            if (std::optional<DropCheck> result = core.on_depth(frame_of(config, id, flat), at(0)).drop_check) {
+                results.push_back(*result);
+            }
+        }
+        return results;
+    };
+    core.on_check_request({9}, at(0));
+    CHECK(send(4).empty());
+
+    SUBCASE("a smaller request_id does not replace it") {
+        core.on_check_request({7}, at(0));
+        const std::vector<DropCheck> results = send(10);
+        REQUIRE(results.size() == 1);
+        CHECK(results[0].request_id == 9);
+        REQUIRE(results[0].frames.size() == 10);
+        CHECK(results[0].frames.front().frame_id == 1);
+        CHECK(results[0].frames.back().frame_id == 10);
+    }
+    SUBCASE("a larger request_id replaces it, and only the new one has a result") {
+        core.on_check_request({11}, at(0));
+        const std::vector<DropCheck> results = send(14);
+        REQUIRE(results.size() == 1);
+        CHECK(results[0].request_id == 11);
+        REQUIRE(results[0].frames.size() == 10);
+        CHECK(results[0].frames.front().frame_id == 5);
+        CHECK(results[0].frames.back().frame_id == 14);
+    }
+    // 去重和結果快取在 M2，核心不記得已算完的 request_id
+    SUBCASE("once it has a result, a smaller request_id starts a new check") {
+        REQUIRE(send(6).size() == 1);
+        core.on_check_request({3}, at(0));
+        const std::vector<DropCheck> results = send(10);
+        REQUIRE(results.size() == 1);
+        CHECK(results[0].request_id == 3);
+        CHECK(results[0].frames.front().frame_id == 11);
+    }
+    // server 沒收到 ack 每 300 ms 重送一次，不能每次都清掉已收的幀
+    SUBCASE("the same request_id sent again keeps the frames already collected") {
+        core.on_check_request({9}, at(0));
+        const std::vector<DropCheck> results = send(10);
+        REQUIRE(results.size() == 1);
+        CHECK(results[0].request_id == 9);
+        REQUIRE(results[0].frames.size() == 10);
+        CHECK(results[0].frames.front().frame_id == 1);
+        CHECK(results[0].frames.back().frame_id == 10);
+    }
+}
+
 TEST_CASE("drop check: when every frame fails the same way, counts has that reason for all frames") {
     const Config config = load_config(kConfigPath);
     Scene scene;

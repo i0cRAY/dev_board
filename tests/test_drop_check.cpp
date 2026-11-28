@@ -470,21 +470,18 @@ TEST_CASE("drop check: frames that disagree are merged") {
         CHECK(result->counts == std::map<CheckReason, int>{{CheckReason::hole, 3}});
     }
     // 兩種順序都跑：hole 贏是因為優先順序，不是因為先到或後到
-    SUBCASE("3 slope and 3 hole frames tie, and hole wins, slope first") {
-        const std::optional<DropCheck> result =
-            drop_check(config, pose, frames({{3, &steep}, {3, &hole}, {4, &flat}}));
+    const auto hole_wins_the_tie = [&](const std::vector<std::vector<std::uint16_t>>& depths) {
+        const std::optional<DropCheck> result = drop_check(config, pose, depths);
         REQUIRE(result.has_value());
         CHECK_FALSE(result->ok);
         CHECK(name(result->reason) == "hole");
         CHECK(result->counts == std::map<CheckReason, int>{{CheckReason::hole, 3}, {CheckReason::slope, 3}});
+    };
+    SUBCASE("3 slope and 3 hole frames tie, and hole wins, slope first") {
+        hole_wins_the_tie(frames({{3, &steep}, {3, &hole}, {4, &flat}}));
     }
     SUBCASE("3 slope and 3 hole frames tie, and hole wins, hole first") {
-        const std::optional<DropCheck> result =
-            drop_check(config, pose, frames({{3, &hole}, {3, &steep}, {4, &flat}}));
-        REQUIRE(result.has_value());
-        CHECK_FALSE(result->ok);
-        CHECK(name(result->reason) == "hole");
-        CHECK(result->counts == std::map<CheckReason, int>{{CheckReason::hole, 3}, {CheckReason::slope, 3}});
+        hole_wins_the_tie(frames({{3, &hole}, {3, &steep}, {4, &flat}}));
     }
 }
 

@@ -57,9 +57,10 @@ std::string name(const std::optional<CheckReason>& reason) {
     return "?";
 }
 
-// 按「確認」後送同一張深度的 drop_check.frames 幀（frame_id 1、2、…，sim time 100、200、… ms），
-// 回傳最後一幀產生的結果。前面的幀不能有結果
-std::optional<DropCheck> drop_check(const Config& config, const Pose& pose, const std::vector<std::uint16_t>& depth) {
+// 按「確認」後依序送 depths 的每一張（frame_id 1、2、…，sim time 100、200、… ms），回傳最後一幀產生的結果。
+// 前面的幀不能有結果
+std::optional<DropCheck> drop_check(const Config& config, const Pose& pose,
+                                    const std::vector<std::vector<std::uint16_t>>& depths) {
     DecisionCore core(config);
     for (const std::uint32_t t : {0u, 1000u}) {
         core.on_attitude({t, pose.roll, pose.pitch, pose.yaw}, at(0));
@@ -67,17 +68,23 @@ std::optional<DropCheck> drop_check(const Config& config, const Pose& pose, cons
     }
     core.on_check_request({7}, at(0));
     std::optional<DropCheck> result;
-    for (int i = 1; i <= config.drop_check.frames; ++i) {
-        const auto id = static_cast<std::uint32_t>(i);
+    for (std::size_t i = 0; i < depths.size(); ++i) {
+        const auto id = static_cast<std::uint32_t>(i + 1);
         Results results = core.on_depth(
-            {id, 100u * id, config.camera.depth.width, config.camera.depth.height, depth}, at(30 * i));
-        if (i < config.drop_check.frames) {
+            {id, 100u * id, config.camera.depth.width, config.camera.depth.height, depths[i]}, at(30 * (i + 1)));
+        if (i + 1 < depths.size()) {
             REQUIRE_FALSE(results.drop_check.has_value());
         } else {
             result = results.drop_check;
         }
     }
     return result;
+}
+
+// 同一張深度送 drop_check.frames 幀
+std::optional<DropCheck> drop_check(const Config& config, const Pose& pose, const std::vector<std::uint16_t>& depth) {
+    return drop_check(config, pose,
+                      std::vector<std::vector<std::uint16_t>>(static_cast<std::size_t>(config.drop_check.frames), depth));
 }
 
 std::optional<DropCheck> drop_check(const Config& config, const Scene& scene, const Pose& pose,
@@ -420,6 +427,53 @@ TEST_CASE("drop check: when every frame fails the same way, counts has that reas
     REQUIRE(result.has_value());
     CHECK_FALSE(result->ok);
     CHECK(result->counts == std::map<CheckReason, int>{{CheckReason::hole, 10}});
+}
+
+// 10 幀的結果不同時照 §7 合併：合格 ≥ 8 幀就合格，否則取最多的原因，平手時 hole 優先
+TEST_CASE("drop check: frames that disagree are merged") {
+    const Config config = load_config(kConfigPath);
+    const Pose pose = hover(3.0);
+    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, pose);
+    Scene pit;
+    pit.pits.push_back({{-0.25, 0.25, -0.25, 0.25}, 0.5});
+    const std::vector<std::uint16_t> hole = synthetic::synthesize_depth(pit, config.camera, pose);
+    Scene slope;
+    slope.rise_per_east = std::tan(11.0 * kDegree);
+    const std::vector<std::uint16_t> steep = synthetic::synthesize_depth(slope, config.camera, pose);
+    // 失敗的幀放前面，合格的放後面
+    const auto frames = [](std::initializer_list<std::pair<int, const std::vector<std::uint16_t>*>> runs) {
+        std::vector<std::vector<std::uint16_t>> depths;
+        for (const auto& [count, depth] : runs) {
+            depths.insert(depths.end(), static_cast<std::size_t>(count), *depth);
+        }
+        return depths;
+    };
+
+    SUBCASE("8 passing and 2 hole frames pass") {
+        const std::optional<DropCheck> result = drop_check(config, pose, frames({{2, &hole}, {8, &flat}}));
+        REQUIRE(result.has_value());
+        CHECK(result->ok);
+        CHECK_FALSE(result->reason.has_value());
+        CHECK(result->counts.empty());
+        REQUIRE(result->frames.size() == 10);
+        CHECK(name(result->frames[0].reason) == "hole");
+        CHECK(name(result->frames[9].reason) == "ok");
+    }
+    SUBCASE("7 passing and 3 hole frames are a hole") {
+        const std::optional<DropCheck> result = drop_check(config, pose, frames({{3, &hole}, {7, &flat}}));
+        REQUIRE(result.has_value());
+        CHECK_FALSE(result->ok);
+        CHECK(name(result->reason) == "hole");
+        CHECK(result->counts == std::map<CheckReason, int>{{CheckReason::hole, 3}});
+    }
+    SUBCASE("3 slope and 3 hole frames tie, and hole wins") {
+        const std::optional<DropCheck> result =
+            drop_check(config, pose, frames({{3, &steep}, {3, &hole}, {4, &flat}}));
+        REQUIRE(result.has_value());
+        CHECK_FALSE(result->ok);
+        CHECK(name(result->reason) == "hole");
+        CHECK(result->counts == std::map<CheckReason, int>{{CheckReason::hole, 3}, {CheckReason::slope, 3}});
+    }
 }
 
 // 3 m 高時每格 7 × 7 個像素。2×2 格每格 30 個改成 0：剩 19 個有效點，但無效比例 61%

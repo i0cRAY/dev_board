@@ -17,3 +17,10 @@ Blocked by: 04
 - [ ] 還沒算完收到更大的 `request_id`：只回新的；較小的不取代新的
 - [ ] 深度 5 FPS：1.5 秒時回 `no_depth`，`counts` 是已收到的統計
 - [ ] `pc-debug`、`pc-release`、`h1v1`＋qemu 測試通過
+
+## Comments
+
+2026-11-28（04 的 review 留下來的）：
+- 「較小的不取代新的」也要涵蓋**同一個 `request_id` 重送**：現在 `on_check_request` 一律取代等待中的確認，同一個 id 重送會清掉已收的幀重收；server 每 300 ms 重送一次時可能永遠收不滿（04 review 的 AD1、SP2）。
+- 先決定比較的對象：跟等待中的那筆比，還是跟歷史最大的比（§9.1 寫「比目前最大的還小」）。跟歷史最大的比時，server 重啟後 `request_id` 從 1 開始，核心要有辦法知道 `session_id` 換了，不然之後的請求都會被丟掉。
+- 這條規則來自 §9.1 的 UDP 重送和去重。開發板 ↔ server 的協定還沒跟 server 組確認（server 組員 2026-11-23 把 Godot ↔ server 改成二進位），協定改了（例如沒有重送、沒有 `request_id`、改用 TCP）這一格要跟著改或拿掉。

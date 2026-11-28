@@ -2,6 +2,7 @@ add_executable(dev_board_tests
   test_main.cpp
   test_config.cpp
   test_downsample.cpp
+  test_drop_check.cpp
   test_height.cpp
   test_synthetic_depth.cpp
   test_third_party.cpp)

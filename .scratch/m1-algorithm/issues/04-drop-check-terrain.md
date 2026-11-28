@@ -1,6 +1,7 @@
 # 04: 投放前確認：地面判斷
 
 Status: ready-for-agent
+Closed: 2026-11-28
 Blocked by: 01, 03
 
 **What to build:** 操作員按「確認」，核心收 10 幀，用 `evaluate` 判斷正下方的投放區和外圈，回傳合格或失敗原因。這張做地面的判斷；飛行狀態和 10 幀的合併規則在 05。
@@ -44,3 +45,5 @@ Blocked by: 01, 03
 - Q1（ST1／SP1，10 幀合併沒測）：選 O1，05 的三個合併例子（8＋2 `hole` → `ok`、7＋3 `hole` → `hole`、4＋3 `hole`＋3 `slope` → `hole`）現在就在 04 寫成測試。理由：合併已照 §7 寫好，缺的只是測試，測試便宜；縮成「10 幀相同才回」要寫一段 05 會丟掉的暫時規則，等 05 補則 main 上會有一段沒測的程式。
 - Q2（SP2／AD1，`on_check_request` 不看 `request_id` 就取代等待中的確認）：選 O2，留給 05，已在 05 的 Comments 加備註。理由：M2 之前沒有呼叫端會送重複或較小的 `request_id`；「較小」要跟等待中的比還是跟歷史最大的比，取決於 server 重啟（`session_id`）怎麼傳給核心，而開發板 ↔ server 的協定（JSON 或二進位、有沒有 `request_id`、重送）還沒跟 server 組定。
 - Q3（ST7，`Cell::h20` 的名字寫死 20%，百分位卻來自 `low_percentile`）：選 O1，保留 `h20`。理由：dev_board_spec §5、§6.2 都叫 `h20`，§5 的公式也寫死 0.2，程式跟 spec 用同一個詞比較好對照；真的改百分位時 spec 和程式一起改名。
+
+2026-11-28（關閉）：Merged in https://github.com/i0cRAY/dev_board/pull/5.

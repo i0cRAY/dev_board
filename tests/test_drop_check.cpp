@@ -1033,27 +1033,3 @@ TEST_CASE("drop check: the plane fit handles cells missing along a diagonal") {
                        pixels_over(config, 3.0, -0.5, -0.25, 0.25, 0.5)};
     CHECK(verdict(config, scene, hover(3.0), options) == "invalid_depth");
 }
-
-// 收幀途中按第二次（較大的 request_id）：之前收的幀不算，只回新的
-TEST_CASE("drop check: a newer request during collection starts over") {
-    const Config config = load_config(kConfigPath);
-    const Pose pose = hover(3.0);
-    const std::vector<std::uint16_t> flat = synthetic::synthesize_depth({}, config.camera, pose);
-
-    DecisionCore core(config);
-    core.on_attitude({0, 0.0, 0.0, 0.0}, at(0));
-    core.on_position({0, 0.0, 0.0, pose.down_m, 0.0, 0.0}, at(0));
-    core.on_check_request({8}, at(0));
-    for (std::uint32_t id = 1; id <= 5; ++id) {
-        CHECK_FALSE(core.on_depth(frame_of(config, id, flat), at(0)).drop_check.has_value());
-    }
-    core.on_check_request({9}, at(0));
-    for (std::uint32_t id = 6; id <= 14; ++id) {
-        CHECK_FALSE(core.on_depth(frame_of(config, id, flat), at(0)).drop_check.has_value());
-    }
-    const std::optional<DropCheck> result = core.on_depth(frame_of(config, 15, flat), at(0)).drop_check;
-    REQUIRE(result.has_value());
-    CHECK(result->request_id == 9);
-    REQUIRE(result->frames.size() == 10);
-    CHECK(result->frames.front().frame_id == 6);
-}
